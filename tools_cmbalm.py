@@ -26,9 +26,11 @@ import misctools
 import local
 
 
-def coadd_real_data(qid,mask):
+def coadd_real_data(qid,mask,dg=2):
     # Compute coadded map by simply summing up each split with the inverse variance weight 
-    
+
+    assert mask.ndim == 2
+
     # First, read survey parameters from qid
     model, season, array, patch, freq = local.qid_info(qid[0])
     
@@ -38,10 +40,7 @@ def coadd_real_data(qid,mask):
     if model == 'dr5':
         dm = interfaces.models['dr5'](region=mask)
         datas = enmap.enmap( [ dm.get_splits( q, calibrated=True ) for q in qid ] )
-        ivars = enmap.enmap( [ dm.get_ivars( q, calibrated=False ) for q in qid ] )        
-
-        # coadded map
-        map_c = mask[None,None,:,:] * np.average( datas*ivars, axis=1 )
+        ivars = enmap.enmap( [ dm.get_ivars( q, calibrated=False ) for q in qid ] )
 
     # Night time data
     if model == 'act_mr3':
@@ -50,11 +49,30 @@ def coadd_real_data(qid,mask):
         dm = interfaces.models['act_mr3'](region=mask,calibrated=False)
         ivars = dm.get_splits_ivar(season=season,patch=patch,arrays=dm.array_freqs[array])
 
-        # coadded map
-        map_c = mask[None,None,:,:] * np.average( datas*ivars, axis=1 )
+    # normalize
+    ivars = ivars_normalize(ivars)
+
+    # coadded map
+    map_c = mask[None,None,:,:] * np.average( datas*ivars, axis=1 )
+    
+    # downgrade
+    map_c = enmap.downgrade(map_c, dg)
+    assert map_c.ndim == 4
 
     return map_c
 
+
+def ivars_normalize(ivars):
+    
+    n1, n2, n3 = np.shape(ivars[:,:,:,0,0])
+    nivars = 0.*ivars
+    for i in range(n1):
+        for j in range(n2):
+            for k in range(n3):
+                nivars[i,j,k,:,:] = ivars[i,j,k,:,:]/np.max(ivars[i,j,k,:,:])
+    #nivars = ivars
+    return nivars
+    
 
 def get_cal(qid):
     # obtain calibration factor from qid
@@ -68,16 +86,16 @@ def get_cal(qid):
         
     if model == 'act_mr3':
         dm = interfaces.models['act_mr3']()
-        return  dm.cals[season][patch][array]['cal']
+        return  dm.cals[season][patch][array+'_'+freq]['cal']
         
                     
-def generate_map(qids,overwrite=False,verbose=True,**kwargs):
+def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
     # Here we compute the real coadd map and simulated maps from the noise covariance and pre-computed fullsky signal
     # This function uses actsims "simgen" code
 
     for qid in qids:
         
-        if qid in ['boss_d04','s16_d03']:
+        if qid in ['boss_d04','s16_d03','boss_04']:
             # Here, the simulation is performed for each array, not frequency, to take into account their correlation
             # For pa3, there are two frequency bands
             if verbose:
@@ -85,9 +103,9 @@ def generate_map(qids,overwrite=False,verbose=True,**kwargs):
             continue
         
         if '_d0' in qid:
-            version = 'v6.3.0_calibrated_mask_version_masks_20200723'
+            version = 'day'
         else:
-            version = 'v6.3.0_calibrated_mask_version_padded_v1'
+            version = 'night'
 
         # define qid_array to take into account multi-frequency case 
         if qid == 'boss_d03':
@@ -106,7 +124,7 @@ def generate_map(qids,overwrite=False,verbose=True,**kwargs):
             aobj[q] = local.init_analysis_params(qid=q,**kwargs)
 
         # load mask
-        mask = load_mask(qid)
+        mask = load_mask(qid,dg=1,with_ivar=False)[0]
 
         # Define an object for sim generation
         model, season, array, patch, __ = local.qid_info(qid)
@@ -125,12 +143,22 @@ def generate_map(qids,overwrite=False,verbose=True,**kwargs):
 
             # real data
             if i == 0: 
-                maps['s'] = coadd_real_data(qid_array,mask)
+                maps['s'] = coadd_real_data(qid_array,mask) / local.Tcmb
             # simulation
             else:
-                map_s, map_n, ivars = simobj.get_sim(season, patch, array, sim_num=i, set_idx=0)
-                maps['s'] = mask[None,None,:,:] * np.average( map_s*ivars, axis=1 ) 
-                maps['n'] = mask[None,None,:,:] * np.average( map_n*ivars, axis=1 )
+                maps['s'], maps['n'], ivars = simobj.get_sim(season, patch, array, sim_num=i, set_idx=0)
+                
+                # normalize
+                ivars = ivars_normalize(ivars)
+
+                # coadd
+                maps['s'] = mask[None,None,:,:] * np.average( maps['s']*ivars, axis=1 ) / local.Tcmb
+                maps['n'] = mask[None,None,:,:] * np.average( maps['n']*ivars, axis=1 ) / local.Tcmb
+
+                # downgrade
+                maps['s'] = enmap.downgrade(maps['s'], dg)
+                maps['n'] = enmap.downgrade(maps['n'], dg)
+                ivars = enmap.downgrade(ivars, dg)
 
                 # noise is generated with uncalibrated data
                 for qi, q in enumerate(qid_array):
@@ -150,7 +178,7 @@ def generate_map(qids,overwrite=False,verbose=True,**kwargs):
 
 
                 
-def load_mask(qid):    
+def load_mask_core(qid):    
     # load mask by specifying qid
     
     model, season, array, patch, freq = local.qid_info(qid)
@@ -164,13 +192,17 @@ def load_mask(qid):
     return mask
 
 
-def load_mask_with_ivar(qid):
+def load_mask(qid,dg=2,with_ivar=True):
     
-    mask = load_mask(qid)
-    aobj = local.init_analysis_params(qid=qid)
-    ivar = enmap.read_map(aobj.fivar)
+    mask = load_mask_core(qid)
+    mask_dg = enmap.downgrade(mask,dg)
+    if with_ivar:
+        aobj = local.init_analysis_params(qid=qid)
+        ivar = enmap.read_map(aobj.fivar)
+    else:
+        ivar = 1.
     
-    return mask[None,:,:]*ivar
+    return mask_dg[None,:,:]*ivar
 
 
 def get_wfactor(mask,wnmax=5):
@@ -178,6 +210,7 @@ def get_wfactor(mask,wnmax=5):
     for n in range(1,wnmax):
         wn[n] = np.average(mask**n)
     wn[0] = np.average(mask/(mask+1e-30))
+    print('wfactors:',wn)
     return wn
     
                 
@@ -201,6 +234,7 @@ def remove_lxly(fmap,lmin=100,lmax=4096):
     alm = enmap.fft(fmap)
     shape, wcs = fmap.shape, fmap.wcs
     kmask = define_lmask(shape,wcs,lmin=lmin,lmax=lmax,lxcut=90,lycut=50)
+    print(np.shape(kmask),np.shape(alm))
     alm[kmask<0.5] = 0
     fmap_fl = enmap.ifft(alm).real
     return fmap_fl
@@ -235,6 +269,7 @@ def map2alm(qids,overwrite=False,verbose=True,**kwargs):
             if i == 0: 
             
                 maps_c = enmap.read_map(aobj.fmap['s'][0])
+                print(np.shape(maps_c))
                 alm_c = map2alm_core(maps_c[0,:,:],lmax=aobj.lmax,nside=aobj.nside)
                 alm_c /= Bl[:,None]
                 pickle.dump((alm_c),open(aobj.falm['c']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
@@ -284,15 +319,18 @@ def alm2aps_core(lmax,falm,w2=1.,mtype=['T']):
     return cl/w2
         
 
-def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],**kwargs):
+def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],Wn=None,**kwargs):
 
     for qid in qids: 
         
         aobj = local.init_analysis_params(qid=qid,**kwargs)
         
-        mask_iv = load_mask_with_ivar(qid)
-        mask_hp = enmap.to_healpix(mask_iv,nside=aobj.nside)
-        wn = get_wfactor(mask_hp)
+        if Wn is None:
+            mask_iv = load_mask(qid)
+            mask_hp = enmap.to_healpix(mask_iv,nside=aobj.nside)
+            wn = get_wfactor(mask_hp)
+        else:
+            wn = Wn
 
         cl = {}
         for s in ['c','n']:
@@ -312,7 +350,9 @@ def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],**kwargs):
                     cl[s][ii,:,:] = alm2aps_core(aobj.lmax,fnames,w2=wn[2],mtype=mtype)
  
             # save cl for each rlz
+            if verbose:  print('output aps to',aobj.fcls['c'][rlz])
             np.savetxt(aobj.fcls['c'][rlz],np.concatenate((aobj.l[None,:],cl['c'][ii,:,:])).T)
+            if verbose:  print('output aps to',aobj.fcls['n'][rlz])
             np.savetxt(aobj.fcls['n'][rlz],np.concatenate((aobj.l[None,:],cl['n'][ii,:,:])).T)
 
         # save mean cl to files
@@ -324,19 +364,160 @@ def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],**kwargs):
                 np.savetxt(aobj.fscl[s],np.concatenate((aobj.l[None,:],np.mean(cl[s][imin:,:,:],axis=0),np.std(cl[s][imin:,:,:],axis=0))).T)
 
 
+def alm_supfac(qids,w1=None,overwrite=False,verbose=True,**kwargs):
+
+    del kwargs['snmin'] # set snmin to 1 below
+    
+    for qid in qids:
+
+        aobj = local.init_analysis_params(qid=qid,snmin=1,**kwargs)
+
+        if misctools.check_path(aobj.fsup,overwrite=overwrite,verbose=verbose): continue
+
+        if w1 is None:
+            mask_iv = load_mask(qid)
+            mask_hp = enmap.to_healpix(mask_iv,nside=aobj.nside)
+            W1 = get_wfactor(mask_hp)[1]
+        else:
+            W1 = w1
+            
+        lmax = aobj.lmax
+        rl = np.zeros((len(aobj.rlz),lmax+1))
+
+        for ii, rlz in enumerate(tqdm.tqdm(aobj.rlz)):
+ 
+            # projected signal alm
+            Tlm_obs = pickle.load(open(aobj.falm['s']['T'][rlz],"rb"))
+            
+            # input fullsky signal alm
+            f = '/project/projectdirs/act/data/actsims_data/signal_v0.4/fullskyLensedUnabberatedCMB_alm_set00_'+str(rlz).zfill(5)+'.fits'
+            Tlm_inp = np.complex128( hp.fitsfunc.read_alm( f, hdu = (1) ) ) / local.Tcmb
+            ilmax = hp.sphtfunc.Alm.getlmax(len(Tlm_inp))
+            Tlm_inp = curvedsky.utils.lm_healpy2healpix(len(Tlm_inp), Tlm_inp, ilmax)[:lmax+1,:lmax+1]
+
+            # obs x input
+            xl = curvedsky.utils.alm2cl(lmax,Tlm_obs,Tlm_inp)
+            
+            # input auto
+            cl = curvedsky.utils.alm2cl(lmax,Tlm_inp)
+            
+            # take ratio to get suppression factor
+            rl[ii,2:] = xl[2:]/cl[2:]
+
+        # save to file
+        mrl = np.mean(rl,axis=0)
+        np.savetxt( aobj.fsup, np.array( ( aobj.l, mrl, mrl/W1 ) ).T )
+        
+
+
+def comb_Nl(qids,ncl,rcl=None):
+
+    Nl = 0.*ncl[qids[0]]
+    
+    for q in qids:
+        if rcl is None:
+            Nl[2:] += 1./ncl[q][2:]
+        else:
+            Nl[2:] += rcl[q][2:]**2/ncl[q][2:]
+    Nl[2:] = 1./Nl[2:]
+    return Nl
+
+
+
+def alm_comb(qids,qidc,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwargs):
+
+    # qids = qid to be combined
+    # qidc = output qid
+    
+    aobj = {q: local.init_analysis_params(qid=q,**kwargs) for q in qids+[qidc]}
+
+    # pre-computed spectra
+    #mcl  = {q: (np.loadtxt(aobj[q].fscl['c'])).T[1] for q in qids}
+    ncl  = {q: (np.loadtxt(aobj[q].fscl['n'])).T[1] for q in qids}
+    # sup fac
+    #fcl  = {q: (np.loadtxt(aobj[q].fsup)).T[1] for q in qids}
+    rcl  = {q: (np.loadtxt(aobj[q].fsup)).T[2] for q in qids}
+    Ncl  = comb_Nl(qids,ncl,rcl)
+    #Ncl  = comb_Nl(qids,ncl)
+
+ 
+    w1 = {}
+    for qid in qids:
+        mask_iv = load_mask(qid)
+        mask_hp = enmap.to_healpix(mask_iv,nside=aobj[qid].nside)
+        w1[qid] = get_wfactor(mask_hp)[1]
+
+    
+    for rlz in tqdm.tqdm(aobj[qids[0]].rlz):
+
+        if misctools.check_path([aobj[qidc].falm['c']['T'][rlz],aobj[qidc].falm['n']['T'][rlz]],overwrite=overwrite,verbose=verbose): continue
+
+        wTlm = {}
+        for s in ['c','s','n']:
+            for m in mtype:
+                if rlz == 0 and s in ['s','n']: continue
+                wTlm[s,m] = 0.
+                for q in qids:
+                    # walm = 1/N alm = 1/(N/r^2) alm/r
+                    #wTlm[s,m] += 1./ncl[q][:,None] * pickle.load(open(aobj[q].falm[s]['T'][rlz],"rb")) / w1[q]
+                    wTlm[s,m] += rcl[q][:,None]/(ncl[q][:,None]+ep) * pickle.load(open(aobj[q].falm[s]['T'][rlz],"rb")) #/ w1[q]
+                    wTlm[s,m][:2,:] = 0.
+        
+                wTlm[s,m] *= Ncl[:,None]
+                # save alm for each rlz
+                pickle.dump((wTlm[s,m]),open(aobj[qidc].falm[s][m][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                pickle.dump((wTlm[s,m]),open(aobj[qidc].falm[s][m][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+
+
+
+def diff_day_night(overwrite=False,verbose=True,mtype=['T'],**kwargs):
+
+    qid  = 'diff_dn'
+    aobj = {q: local.init_analysis_params(qid=q,**kwargs) for q in ['comb_d','comb_n',qid]}
+
+    cl = {}
+    for s in ['c','s','n']:
+        cl[s] = np.zeros((len(aobj[qid].rlz),6,aobj[qid].lmax+1))
+
+    for ii, rlz in enumerate(tqdm.tqdm(aobj['comb_d'].rlz)):
+
+        if misctools.check_path(aobj['diff_dn'].falm['c']['T'][rlz],overwrite=overwrite,verbose=verbose): continue
+
+        for s in ['c','s','n']:
+            
+            if rlz==0 and s in ['s','n']: continue
+
+            Talm0 = pickle.load(open(aobj['comb_d'].falm[s]['T'][rlz],"rb")) / 0.016
+            Talm1 = pickle.load(open(aobj['comb_n'].falm[s]['T'][rlz],"rb")) / 0.02
+        
+            # save diff alm for each rlz
+            pickle.dump((Talm0-Talm1),open(aobj['diff_dn'].falm[s]['T'][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+
+            cl[s][ii,0,:] = curvedsky.utils.alm2cl(aobj[qid].lmax,Talm0-Talm1)
+        
+            # save cl for each rlz
+            np.savetxt(aobj[qid].fcls[s][rlz],np.concatenate((aobj[qid].l[None,:],cl[s][ii,:,:])).T)
+
+    # save mean cl to files
+    if aobj[qid].rlz[-1] >= 2:
+        if verbose:  print('save averaged diff day-night spectrum')
+        imin = max(0,1-aobj[qid].rlz[0]) 
+        for s in ['c','s','n']:
+            np.savetxt(aobj[qid].fscl[s],np.concatenate((aobj[qid].l[None,:],np.mean(cl[s][imin:,:,:],axis=0),np.std(cl[s][imin:,:,:],axis=0))).T)
+
+        
+        
 def alm2aps_null(qid,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwargs):
 
-    aobj = {}
     pid = qid.replace('_d0','_0')
     if 's16' in qid:
         pid = qid.replace('s16','boss')
 
-    for q in [qid,pid]:
-        aobj[q] = local.init_analysis_params(qid=q,**kwargs)
+    aobj = {q: local.init_analysis_params(qid=q,**kwargs) for q in [qid,pid]}
 
-    mask_iv0 = load_mask_with_ivar(qid)
+    mask_iv0 = load_mask(qid)
     mask_hp0 = enmap.to_healpix(mask_iv0,nside=aobj[qid].nside)
-    mask_iv1 = load_mask_with_ivar(pid)
+    mask_iv1 = load_mask(pid)
     mask_hp1 = enmap.to_healpix(mask_iv1,nside=aobj[pid].nside)
 
     w2 = np.average(mask_hp0**2)
