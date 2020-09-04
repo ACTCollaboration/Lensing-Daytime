@@ -145,6 +145,10 @@ class analysis_setup():
 
         # beam
         self.fbeam = d['local'] + 'beam/' + self.qid+'.dat'
+        
+        # custom mask
+        self.amask = d['cmb'] + 'mask/'+self.qid+'_'+self.wtype+'_'+apotag+'.fits'
+        self.s16mask = d['cmb'] + 'mask/s16mask.fits'
 
 
     def array(self):
@@ -225,4 +229,43 @@ def qid_label(qid):
     
     return  table[qid]
 
+
+
+# ----------
+# Test
+# ----------
+
+def quick_rec(alm,ocl,lcl,al,mask=None,rlmin=500,rlmax=3000,nside=2048,lmax=2048):
+    if mask is None:
+        wTlm = alm[:rlmax+1,:rlmax+1]
+    else:
+        wTlm = curvedsky.utils.mulwin(nside,rlmax,rlmax,alm[:rlmax+1,:rlmax+1],mask)
+    fTlm = wTlm/(ocl[:rlmax+1,None]+1e-30)
+    klm, __ = curvedsky.rec_lens.qtt(lmax,rlmin,rlmax,lcl[:rlmax+1],fTlm,fTlm,gtype='k',nside_t=nside)
+    klm *= al[:lmax+1,None]
+    kl = curvedsky.utils.alm2cl(lmax,klm)
+    return klm, kl
+
+
+# ----------
+# Plot
+# ----------
+
+def show_tmap(Tlm,ocl,mask=1,lmin=500,lmax=3000,v=3e11,nside=512,lonra=[148,243],latra=[-3,20],title=''):
+    Flm = Tlm.copy()
+    Flm[:lmin,:] = 0.
+    Tmap = curvedsky.utils.hp_alm2map(nside,lmax,lmax,Flm[:lmax+1,:lmax+1]/(ocl[:lmax+1,None]+1e-30))
+    hp.cartview(mask*Tmap,lonra=lonra,latra=latra,min=-v,max=v,cbar=False,title=title)
+
+    
+def show_kmap(klm=None,fname=None,lmin=200,lmax=1024,nside=1024,v=.1,lonra=[147,244],latra=[-3,21],output=False,title=''):
+    if fname is not None:
+        Flm, __ = pickle.load(open(fname,"rb"))
+    if klm is not None:
+        Flm = klm.copy()
+    Flm[:lmin,:] = 0.
+    kmap = curvedsky.utils.hp_alm2map(nside,lmax,lmax,Flm[:lmax+1,:lmax+1])
+    hp.cartview(kmap,lonra=lonra,latra=latra,min=-v,max=v,cbar=False,title=title)
+    if output:
+        return kmap
 

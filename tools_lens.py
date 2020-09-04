@@ -28,7 +28,7 @@ def load_input_plm(fpalm,lmax,verbose=False):
     return alm
 
 
-def aps(qobj,rlzs,fpalm,wn,verbose=True):
+def aps(qobj,rlzs,fpalm,wn,verbose=True,meansub=True):
     # Compute aps of reconstructed lensing map
 
     for q in tqdm.tqdm(qobj.qlist,ncols=100,desc='aps'):
@@ -41,7 +41,10 @@ def aps(qobj,rlzs,fpalm,wn,verbose=True):
 
             # load reconstructed kappa and curl alms
             glm, clm = pickle.load(open(qobj.f[q].alm[rlz],"rb"))
-            mfg, mfc = pickle.load(open(qobj.f[q].mfb[rlz],"rb"))
+            if meansub:
+                mfg, mfc = pickle.load(open(qobj.f[q].mfb[rlz],"rb"))
+            else:
+                mfg, mfc = 0., 0.
 
             # load kappa
             if rlz != 0:
@@ -61,13 +64,19 @@ def aps(qobj,rlzs,fpalm,wn,verbose=True):
             np.savetxt(qobj.f[q].mcls,np.concatenate((qobj.l[None,:],np.mean(cl[1:,:,:],axis=0),np.std(cl[1:,:,:],axis=0))).T)
 
 
-def interface(aobj,wn,run=['norm','qrec','n0','mean','aps'],ocl=None,kwargs_ov={},kwargs_qrec={}):
+def interface(aobj,wn,run=['norm','qrec','n0','mean','aps'],meansub=True,ocl=None,kwargs_ov={},kwargs_qrec={}):
 
-    if ocl is None
+    if ocl is None:
         # Compute filtering
         ocl = np.ones((3,aobj.lmax+1))
         ocl[0,:] = (np.loadtxt(aobj.fscl['c'])).T[1]
     
+        # observed cl (no suppression)
+        #Aobj = {q: local.init_analysis_params(qid=q,ascale=aobj.ascale) for q in qids}
+        #ncl  = {q: (np.loadtxt(Aobj[q].fscl['n'])).T[1] for q in qids}
+        #Ncl  = tools_cmb.comb_Nl(qids,ncl)
+        #ocl  = Aobj.lcl[0,:] + Ncl
+
     ifl = ocl#p.lcl[0:3,:]
 
     dirs = local.data_directory()
@@ -75,7 +84,7 @@ def interface(aobj,wn,run=['norm','qrec','n0','mean','aps'],ocl=None,kwargs_ov={
 
     # Aps of reconstructed phi
     if 'aps' in run:
-        aps(qobj,aobj.rlz,aobj.fiklm,wn)
+        aps(qobj,aobj.rlz,aobj.fiklm,wn,meansub=meansub)
 
 
 
