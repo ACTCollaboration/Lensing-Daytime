@@ -26,6 +26,58 @@ import misctools
 import local
 
 
+def interface(run,qids,kwargs_ov={},kwargs={}):
+    
+    if 'alm' in run:
+        map2alm(qids,**kwargs_ov,**kwargs)
+
+    if 'aps' in run:
+        alm2aps(qids,mtype=['T'],**kwargs_ov,**kwargs)
+
+    if 'sup' in run:
+        alm_supfac(qids,**kwargs_ov,**kwargs)
+        
+    if 'each' in run:
+        for qid_d, qid_n in zip(local.boss_d,local.boss_n):
+            diff_day_night(qid_d,qid_n,'diff_'+qid_n,mtype=['T'],**kwargs_ov,**kwargs)
+
+    if 'comb' in run:
+    
+        qid_dn = ['comb_d','comb_n']
+        if 'iso15' in kwargs['wtype']:
+            if 'V3' in kwargs['wtype']:
+                qids_d = ['boss_d02','boss_d03','boss_d04']
+                qids_n = ['boss_02','boss_03','boss_04']
+                #qids_d = local.boss_d
+                #qids_n = local.boss_n
+            else:
+                qids_d = ['boss_d03']
+                qids_n = ['boss_03','boss_04']
+        elif 'com15' in kwargs['wtype']:
+            qids_d = local.boss_d
+            qids_n = local.boss_n
+        else:
+            qids_d = local.day_all
+            qids_n = local.boss_n
+
+        # comb day or night
+        print('combine alm for day')
+        alm_comb(qids_d,qid_dn[0],mtype=['T'],**kwargs_ov,**kwargs)
+        print('combine alm for night')
+        alm_comb(qids_n,qid_dn[1],mtype=['T'],**kwargs_ov,**kwargs)
+    
+        alm2aps(qid_dn,mtype=['T'],**kwargs_ov,**kwargs)
+        alm_supfac(qid_dn,**kwargs_ov,**kwargs)
+
+        # day - night
+        print('compute day - night')
+        diff_day_night(qid_dn[0],qid_dn[1],'diff_dn',mtype=['T'],**kwargs_ov,**kwargs)
+
+        # day + night
+        alm_comb(qids_d+qids_n,'comb_dn',mtype=['T'],**kwargs_ov,**kwargs)
+        alm2aps(['comb_dn'],mtype=['T'],**kwargs_ov,**kwargs)
+
+
 def coadd_real_data(qid,mask,dg=2):
     # Compute coadded map by simply summing up each split with the inverse variance weight 
 
@@ -34,34 +86,54 @@ def coadd_real_data(qid,mask,dg=2):
     # First, read survey parameters from qid
     model, season, array, patch, freq = local.qid_info(qid[0])
     
-    # for consistency with noise sim which is generated with uncalibrated data, the ivars are not multiplied by the cal factor.
-
     # Day time data
     if model == 'dr5':
         dm = interfaces.models['dr5'](region=mask)
         datas = enmap.enmap( [ dm.get_splits( q, calibrated=True ) for q in qid ] )
-        #ivars = enmap.enmap( [ dm.get_ivars( q, calibrated=False ) for q in qid ] )
         ivars = enmap.enmap( [ dm.get_ivars( q, calibrated=True ) for q in qid ] )
 
     # Night time data
     if model == 'act_mr3':
         dm = interfaces.models['act_mr3'](region=mask,calibrated=True)
         datas = dm.get_splits(season=season,patch=patch,arrays=dm.array_freqs[array],srcfree=True)
-        #dm = interfaces.models['act_mr3'](region=mask,calibrated=False)
-        dm = interfaces.models['act_mr3'](region=mask,calibrated=True)
         ivars = dm.get_splits_ivar(season=season,patch=patch,arrays=dm.array_freqs[array])
 
     # normalize
-    ivars = ivars_normalize(ivars)
-
+    #ivars = ivars_normalize(ivars)
+    
     # coadded map
-    map_c = mask[None,None,:,:] * np.average( datas*ivars, axis=1 )
+    civars = np.average(ivars,axis=1) 
+    civars[civars==0] = np.inf
+    map_c = mask[None,None,:,:] * np.average( datas*ivars, axis=1 )/ civars / local.Tcmb 
     
     # downgrade
     map_c = enmap.downgrade(map_c, dg)
+    
+    # check
     assert map_c.ndim == 4
 
     return map_c
+
+
+def get_ivar(qid,mask,dg=2):
+
+    # First, read survey parameters from qid
+    model, season, array, patch, freq = local.qid_info(qid[0])
+
+    # Day time data
+    if model == 'dr5':
+        dm = interfaces.models['dr5'](region=mask)
+        ivars = enmap.enmap( [ dm.get_ivars( q, calibrated=True ) for q in qid ] )
+
+    # Night time data
+    if model == 'act_mr3':
+        dm = interfaces.models['act_mr3'](region=mask,calibrated=True)
+        ivars = dm.get_splits_ivar(season=season,patch=patch,arrays=dm.array_freqs[array])
+
+    # downgrade
+    ivars = enmap.downgrade(ivars, dg)
+
+    return ivars
 
 
 def ivars_normalize(ivars):
@@ -72,25 +144,9 @@ def ivars_normalize(ivars):
         for j in range(n2):
             for k in range(n3):
                 nivars[i,j,k,:,:] = ivars[i,j,k,:,:]/np.max(ivars[i,j,k,:,:])
-    #nivars = ivars
     return nivars
     
 
-def get_cal(qid):
-    # obtain calibration factor from qid
-    # see soapack for the values of cal factors
-    
-    model, season, array, patch, freq = local.qid_info(qid)
-                
-    if model == 'dr5':
-        dm = interfaces.models['dr5']()
-        return  dm.get_gain(qid)
-        
-    if model == 'act_mr3':
-        dm = interfaces.models['act_mr3']()
-        return  dm.cals[season][patch][array+'_'+freq]['cal']
-        
-                    
 def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
     # Here we compute the real coadd map and simulated maps from the noise covariance and pre-computed fullsky signal
     # This function uses actsims "simgen" code
@@ -105,10 +161,8 @@ def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
             continue
         
         if '_d0' in qid:
-            #version = 'day'
             version = 'v6.3.0_calibrated_mask_version_masks_20200723'
         else:
-            #version = 'night'
             version = 'v6.3.0_calibrated_mask_version_padded_v1'
 
         # define qid_array to take into account multi-frequency case 
@@ -123,22 +177,26 @@ def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
             qid_array = [qid]
 
         # define filename
-        aobj = {}
-        for q in qid_array:
-            aobj[q] = local.init_analysis_params(qid=q,**kwargs)
+        aobj = { q: local.init_analysis_params(qid=q,**kwargs) for q in qid_array }
 
         # load survey mask
-        mask = load_mask(qid,dg=1,with_ivar=False)[0]
+        mask = load_survey_mask(qid,dg=1)[0]
         
-        ## load survey mask and make binary mask, apodize latter
-        #mask = mask/(mask+1e-30)
-
         # Define an object for sim generation
         model, season, array, patch, __ = local.qid_info(qid)
         if model == 'dr5':
             simobj = simgen.SimGen(version=version,qid=qid_array,model=model)
         if model == 'act_mr3':
             simobj = simgen.SimGen(version=version,model=model)
+
+        
+        # save 1/var map
+        if not misctools.check_path(aobj[qid_array[0]].fivar,overwrite=overwrite,verbose=verbose): 
+            ivars = get_ivar(qid_array,mask)
+            civars = np.average(ivars,axis=1) # coadd ivar
+            for qi, q in enumerate(qid_array):
+                enmap.write_map( aobj[q].fivar, civars[qi,:,:,:] )
+
 
         # loop over realizations
         for i in tqdm.tqdm(aobj[qid].rlz):
@@ -150,31 +208,23 @@ def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
 
             # real data
             if i == 0: 
-                maps['s'] = coadd_real_data(qid_array,mask) / local.Tcmb
+                maps['s'] = coadd_real_data(qid_array,mask) 
             # simulation
             else:
                 maps['s'], maps['n'], ivars = simobj.get_sim(season, patch, array, sim_num=i, set_idx=0)
-                
-                # normalize
-                ivars = ivars_normalize(ivars)
 
-                # coadd
-                maps['s'] = mask[None,None,:,:] * np.average( maps['s']*ivars, axis=1 ) / local.Tcmb
-                maps['n'] = mask[None,None,:,:] * np.average( maps['n']*ivars, axis=1 ) / local.Tcmb
+                # normalize
+                #ivars = ivars_normalize(ivars)
+
+                # coadd with civars weight implicitly multiplied
+                civars = np.average(ivars,axis=1)
+                civars[civars==0] = np.inf
+                maps['s'] = mask[None,None,:,:] * np.average( maps['s']*ivars, axis=1 ) / civars / local.Tcmb 
+                maps['n'] = mask[None,None,:,:] * np.average( maps['n']*ivars, axis=1 ) / civars / local.Tcmb
 
                 # downgrade
                 maps['s'] = enmap.downgrade(maps['s'], dg)
                 maps['n'] = enmap.downgrade(maps['n'], dg)
-                ivars = enmap.downgrade(ivars, dg)
-
-                # noise is generated with uncalibrated data
-                #for qi, q in enumerate(qid_array):
-                #    if verbose: print('apply cal factor to noise sim',get_cal(q))
-                #    maps['n'][qi,:,:,:] *= get_cal(q)
-
-                for qi, q in enumerate(qid_array):
-                    if not misctools.check_path(aobj[q].fivar,overwrite=overwrite,verbose=verbose): 
-                        enmap.write_map( aobj[q].fivar, np.average(ivars[qi,:,:,:,:],axis=0) )
 
             # save signal and noise to files
             # data is saved to a signal file
@@ -185,7 +235,7 @@ def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
 
 
                 
-def load_mask_core(qid):    
+def load_survey_mask_core(qid):    
     # load mask by specifying qid
     
     model, season, array, patch, freq = local.qid_info(qid)
@@ -199,20 +249,148 @@ def load_mask_core(qid):
     return mask
 
 
-def load_mask(qid,dg=2,with_ivar=True):
-    
-    mask = load_mask_core(qid)
+def load_survey_mask(qid,dg=2):
+
+    # load survey mask
+    mask = load_survey_mask_core(qid)
     mask_dg = enmap.downgrade(mask,dg)
 
+    return mask_dg
+
+
+def load_ivar_curvedsky(aobj):
+    
+    wtype = (aobj.wtype).replace('pt','')
+    
+    if 'vc' in wtype:
+        if '16' in wtype:
+            return hp.fitsfunc.read_map(aobj.fivar16,verbose=False)
+        elif '15' in wtype:
+            return hp.fitsfunc.read_map(aobj.fivar15,verbose=False)
+        else:
+            sys.exit('ivar is not well defined')
+    elif 'vd' in wtype:
+        ivar = enmap.read_map( aobj.fivarvd )
+        return enmap.to_healpix(ivar[0],nside=aobj.nside)
+    elif 'v3' in wtype:
+        ivar = enmap.read_map( local.init_analysis_params(qid='boss_d03').fivar )
+        return enmap.to_healpix(ivar[0],nside=aobj.nside)
+    elif 'V3' in wtype:
+        ivar = enmap.read_map( local.init_analysis_params(qid='boss_d03').fivar ) ** 2
+        return enmap.to_healpix(ivar[0],nside=aobj.nside)
+    elif 'v0' in wtype:
+        return 1.
+    elif wtype == 'base':
+        ivar = enmap.read_map( aobj.fivar )
+        return enmap.to_healpix(ivar[0],nside=aobj.nside)
+    else:
+        sys.exit('ivar is not well defined')
+        
+
+def create_square_mask(nside,lon,lat,theta,phi):
+    mask = np.zeros(12*nside**2)
+    mask[lon[0]>=theta] = 1.
+    mask[lon[1]<=theta] = 1.
+    mask[lat[0]>=phi] = 1.
+    mask[lat[1]<=phi] = 1.
+    return mask
+
+
+def create_ptsr_mask_old(nside,\
+                lonras = [[186.8,187.8],[187.2,188.2],[208.8,209.8],[237,237.7],[164.3,164.9],[225.7,226.3]],\
+                latras = [[1.5,2.5],[12.1,12.8],[19,19.7],[2.3,3],[1.3,1.9],[10.2,10.8]],\
+                #lonras = [[186.8,187.8],[187.2,188.2],[164.3,164.9],[225.7,226.3]],\
+                #latras = [[1.5,2.5],[12.1,12.8],[1.3,1.9],[10.2,10.8]],\
+               ascale=0.5):
+    
+    pixel_theta, pixel_phi = hp.pix2ang(nside, np.arange(12*nside**2), lonlat=True)
+    maskpt = 1.
+    
+    for lonra, latra in zip(lonras,latras):
+        maskpt *= create_square_mask(nside,lonra,latra,pixel_theta,pixel_phi)
+    if ascale!= 0.:
+        maskpt = curvedsky.utils.apodize(nside,maskpt,ascale)
+
+    return maskpt
+
+
+def create_ptsr_mask(nside,ascale=0.5,threshold=.0,extend=3.):
+    
+    # from catalogue
+    #ras, decs, size = np.loadtxt('data_local/input/cat_crossmatched.txt',unpack=True,usecols=(0,1,5))
+    #RAs  = ras[size>threshold]
+    #DECs = decs[size>threshold]
+    #arcm = size[size>threshold] * extend
+    
+    RAs, DECs = interfaces.get_act_mr3f_union_sources(version='20200503_sncut_40')
+    arcm = np.ones(len(RAs)) * 10. * extend
+
+    # additional mask
+    RAs_add  = np.array([187.3])
+    DECs_add = np.array([2.])
+    arcm_add = np.array([40.])
+    #RAs_add  = np.array([187.3,187.7,209.3,164.6,226.])
+    #DECs_add = np.array([2.,12.5,19.3,1.6,10.5])
+    #arcm_add = np.array([30.,30.,10.,10.,10.])
+    # add
+    RAs  = np.concatenate((RAs,RAs_add))
+    DECs = np.concatenate((DECs,DECs_add))
+    arcm = np.concatenate((arcm,arcm_add))
+        
+    # compute 3D positions
+    v = hp.pixelfunc.ang2vec(RAs, DECs, lonlat=True)
+    
+    # create mask
+    maskpt = np.ones(12*nside**2)
+    
+    for i in range(len(arcm)):
+        pix = hp.query_disc(nside, v[i], arcm[i]*np.pi/10800.)
+        maskpt[pix] = 0.
+
+    if ascale!= 0.:
+        maskpt = curvedsky.utils.apodize(nside,maskpt,ascale)
+
+    return maskpt
+
+
+def load_window_curvedsky( aobj, survey_mask=True, with_ivar=True, ivar_norm=False ):
+
+    # load survey mask
+    if survey_mask and ( aobj.qid in local.qid_all ):
+        mask = load_survey_mask(aobj.qid)
+        mask = enmap.to_healpix(mask,nside=aobj.nside)  # to healpix map
+    else:
+        mask = 1.
+
+    # load ivar
     if with_ivar:
-        aobj = local.init_analysis_params(qid=qid)
-        ivar = enmap.read_map(aobj.fivar)
+        ivar = load_ivar_curvedsky(aobj)
+        if ivar_norm:
+            ivar = ivar/np.max(ivar)
     else:
         ivar = 1.
-        
-    return mask_dg[None,:,:]*ivar
 
+    # load additional apodization mask
+    if ( aobj.ascale!=1. and aobj.qid in local.qid_all ) or 'com' in aobj.wtype or 'iso' in aobj.wtype:
+        amask = hp.fitsfunc.read_map( aobj.amask, verbose=False )
+    #elif aobj.ascale!=1. and aobj.qid not in local.qid_all:
+    #    amask = hp.fitsfunc.read_map( local.init_analysis_params(qid='boss_03').amask ,verbose=False)
+    else:
+        amask = 1.
 
+    # load ptsr mask for day
+    if 'pt' in aobj.wtype:
+        ptsr = hp.fitsfunc.read_map( aobj.fptsr_old ,verbose=False )
+        #ptsr = create_ptsr_mask_old(aobj.nside)
+    elif 'PT' in aobj.wtype:
+        ptsr = hp.fitsfunc.read_map( aobj.fptsr ,verbose=False )
+        #ptsr = create_ptsr_mask(aobj.nside)
+    else:
+        ptsr = 1.
+
+    return mask*ivar*amask*ptsr
+
+ 
 def get_wfactor(mask,wnmax=5):
     wn = np.zeros(wnmax)
     for n in range(1,wnmax):
@@ -221,7 +399,16 @@ def get_wfactor(mask,wnmax=5):
     print('wfactors:',wn)
     return wn
     
-                
+
+def get_wfactors(qids,ascale,wtype='base',with_ivar=True,ivar_norm=False,wnmax=5):
+    w = {}
+    for q in qids:
+        aobj = local.init_analysis_params(qid=q,ascale=ascale,wtype=wtype)
+        mask = load_window_curvedsky(aobj,with_ivar=with_ivar,ivar_norm=ivar_norm)
+        w[q] = get_wfactor(mask,wnmax=wnmax)
+    return w
+
+   
 def define_lmask(shape,wcs, lxcut = None, lycut = None, lmin = None, lmax = None):
     # copied from orphics
     output = np.ones(shape[-2:], dtype = int)
@@ -243,15 +430,15 @@ def remove_lxly(fmap,lmin=100,lmax=4096):
     alm = enmap.fft(fmap)
     shape, wcs = fmap.shape, fmap.wcs
     kmask = define_lmask(shape,wcs,lmin=lmin,lmax=lmax,lxcut=90,lycut=50)
-    print(np.shape(kmask),np.shape(alm))
+    #print(np.shape(kmask),np.shape(alm))
     alm[kmask<0.5] = 0
     fmap_fl = enmap.ifft(alm).real
     return fmap_fl
 
 
-def map2alm_core(fmap,aobj,amask=1.,lmin=100):
+def map2alm_core(fmap,aobj,amask):
 
-    fmap_fl = remove_lxly( fmap, lmin=lmin, lmax=aobj.lmax )
+    fmap_fl = remove_lxly( fmap, lmin=aobj.clmin, lmax=aobj.lmax )
     hpmap = enmap.to_healpix( fmap_fl, nside=aobj.nside )
     alm = curvedsky.utils.hp_map2alm( aobj.nside, aobj.lmax, aobj.lmax, hpmap*amask )
 
@@ -268,41 +455,49 @@ def beam_func(lmax,qid):
 
 def map2alm(qids,overwrite=False,verbose=True,ascale=1.,**kwargs):
 
-    for qid in qids: 
+    
+    # loop over qid
+    for q in qids:
         
-        aobj = local.init_analysis_params(qid=qid,ascale=ascale,**kwargs)
-        Bl = beam_func(aobj.lmax,qid)
+        aobj = local.init_analysis_params(qid=q,ascale=ascale,**kwargs)
+        
+        # beam
+        Bl = beam_func(aobj.lmax,q)
+
+        # total mask
+        mask = load_window_curvedsky( aobj, survey_mask=False )
+        #civar = load_ivar_curvedsky(aobj)
 
         # change apodization
-        if ascale != 1.:
-            print('correct apodization mask')
-            amask = hp.fitsfunc.read_map(aobj.amask,verbose=verbose)
-            #mask  = hp.fitsfunc.read_map(aobj.amask.replace(str(aobj.ascale)+'deg','1.0deg'),verbose=verbose)
-            #amask = amask/(mask+1e-30)
-                
-        for i in tqdm.tqdm(aobj.rlz):
+        #if ascale != 1. or 'com' in aobj.wtype or 'iso' in aobj.wtype:
+        #    if verbose: print('correct apodization mask')
+        #    amask = hp.fitsfunc.read_map(aobj.amask,verbose=False)
+            
+        # load ptsr mask for day
+        #if 'pt' in aobj.wtype:
+        #    ptsr = create_ptsr_mask(aobj.nside)
+        #else:
+        #    ptsr = 1.
+
+        # loop for map -> alm
+        for i in tqdm.tqdm(aobj.rlz,desc='map -> alm'):
         
             if misctools.check_path(aobj.falm['c']['T'][i],overwrite=overwrite,verbose=verbose): continue
             
             if i == 0: 
-            
-                maps_c = enmap.read_map(aobj.fmap['s'][0],verbose=verbose)
-                print(np.shape(maps_c))
-                alm_c = map2alm_core(maps_c[0,:,:],aobj,amask=amask)
-                alm_c /= Bl[:,None]
+
+                maps_c = enmap.read_map(aobj.fmap['s'][i])[0]
+                alm_c = map2alm_core( maps_c, aobj, mask ) / Bl[:,None]
                 pickle.dump((alm_c),open(aobj.falm['c']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
 
             else:
                 
-                maps_s = enmap.read_map(aobj.fmap['s'][i],verbose=verbose)
-                maps_n = enmap.read_map(aobj.fmap['n'][i],verbose=verbose)
+                maps_s = enmap.read_map(aobj.fmap['s'][i])[0]
+                maps_n = enmap.read_map(aobj.fmap['n'][i])[0]
 
-                alm_s = map2alm_core(maps_s[0,:,:],aobj,amask=amask)
-                alm_n = map2alm_core(maps_n[0,:,:],aobj,amask=amask)
-                alm_s /= Bl[:,None]
-                alm_n /= Bl[:,None]
+                alm_s = map2alm_core( maps_s, aobj, mask ) / Bl[:,None]
+                alm_n = map2alm_core( maps_n, aobj, mask ) / Bl[:,None]
 
-                pickle.dump((alm_s),open(aobj.falm['s']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
                 pickle.dump((alm_n),open(aobj.falm['n']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
                 pickle.dump((alm_s+alm_n),open(aobj.falm['c']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -344,22 +539,17 @@ def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],W2=None,**kwargs):
         aobj = local.init_analysis_params(qid=qid,**kwargs)
         
         if W2 is None:
-            mask_iv = load_mask(qid)
-            mask_hp = enmap.to_healpix(mask_iv,nside=aobj.nside)
-            amask = hp.fitsfunc.read_map(aobj.amask)
-            w2 = get_wfactor(amask*mask_hp)[2]
+            mask = load_window_curvedsky(aobj)
+            w2 = get_wfactor(mask)[2]
         else:
             if isinstance(W2,dict):
                 w2 = W2[qid]
             else:
                 w2 = W2
 
-        cl = {}
-        for s in ['c','n']:
-            cl[s] = np.zeros((len(aobj.rlz),6,aobj.lmax+1))
+        cl = {s: np.zeros((len(aobj.rlz),6,aobj.lmax+1)) for s in ['c','n','s']}
 
-
-        for ii, rlz in enumerate(tqdm.tqdm(aobj.rlz)):
+        for ii, rlz in enumerate(tqdm.tqdm(aobj.rlz,desc='alm -> aps')):
 
             if misctools.check_path(aobj.fcls['c'][rlz],overwrite=overwrite,verbose=verbose): continue
 
@@ -370,18 +560,23 @@ def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],W2=None,**kwargs):
                 for s in ['c','n']:
                     fnames = { m: aobj.falm[s][m][rlz] for m in mtype }
                     cl[s][ii,:,:] = alm2aps_core(aobj.lmax,fnames,w2=w2,mtype=mtype)
+
+                # signal part
+                Tclm = pickle.load(open(aobj.falm['c']['T'][rlz],"rb"))
+                Tnlm = pickle.load(open(aobj.falm['n']['T'][rlz],"rb"))
+                cl['s'][ii,0,:] = curvedsky.utils.alm2cl(aobj.lmax,Tclm-Tnlm)
  
             # save cl for each rlz
-            if verbose:  print('output aps to',aobj.fcls['c'][rlz])
             np.savetxt(aobj.fcls['c'][rlz],np.concatenate((aobj.l[None,:],cl['c'][ii,:,:])).T)
-            if verbose:  print('output aps to',aobj.fcls['n'][rlz])
-            np.savetxt(aobj.fcls['n'][rlz],np.concatenate((aobj.l[None,:],cl['n'][ii,:,:])).T)
+            if rlz >= 1:
+                np.savetxt(aobj.fcls['s'][rlz],np.concatenate((aobj.l[None,:],cl['s'][ii,:,:])).T)
+                np.savetxt(aobj.fcls['n'][rlz],np.concatenate((aobj.l[None,:],cl['n'][ii,:,:])).T)
 
         # save mean cl to files
         if aobj.rlz[-1] >= 2:
             if verbose:  print('save averaged spectrum over rlz')
             imin = max(0,1-aobj.rlz[0]) 
-            for s in ['c','n']:
+            for s in ['c','n','s']:
                 if misctools.check_path(aobj.fscl[s],overwrite=overwrite,verbose=verbose): continue
                 np.savetxt(aobj.fscl[s],np.concatenate((aobj.l[None,:],np.mean(cl[s][imin:,:,:],axis=0),np.std(cl[s][imin:,:,:],axis=0))).T)
 
@@ -397,10 +592,8 @@ def alm_supfac(qids,W1=None,overwrite=False,verbose=True,**kwargs):
         if misctools.check_path(aobj.fsup,overwrite=overwrite,verbose=verbose): continue
 
         if W1 is None:
-            mask_iv = load_mask(qid)
-            mask_hp = enmap.to_healpix(mask_iv,nside=aobj.nside)
-            amask = hp.fitsfunc.read_map(aobj.amask)
-            w1 = get_wfactor(amask*mask_hp)[1]
+            mask = load_window_curvedsky(aobj)
+            w1 = get_wfactor(mask)[1]
         else:
             if isinstance(W1,dict):
                 w1 = W1[qid]
@@ -410,7 +603,7 @@ def alm_supfac(qids,W1=None,overwrite=False,verbose=True,**kwargs):
         lmax = aobj.lmax
         rl = np.zeros((len(aobj.rlz),lmax+1))
 
-        for ii, rlz in enumerate(tqdm.tqdm(aobj.rlz)):
+        for ii, rlz in enumerate(tqdm.tqdm(aobj.rlz,desc='compute supfac')):
  
             # projected signal alm
             Tlm_c = pickle.load(open(aobj.falm['c']['T'][rlz],"rb"))
@@ -421,7 +614,7 @@ def alm_supfac(qids,W1=None,overwrite=False,verbose=True,**kwargs):
             f = '/project/projectdirs/act/data/actsims_data/signal_v0.4/fullskyLensedUnabberatedCMB_alm_set00_'+str(rlz).zfill(5)+'.fits'
             Tlm_inp = np.complex128( hp.fitsfunc.read_alm( f, hdu = (1) ) ) / local.Tcmb
             ilmax = hp.sphtfunc.Alm.getlmax(len(Tlm_inp))
-            Tlm_inp = curvedsky.utils.lm_healpy2healpix(len(Tlm_inp), Tlm_inp, ilmax)[:lmax+1,:lmax+1]
+            Tlm_inp = curvedsky.utils.lm_healpy2healpix(Tlm_inp, ilmax)[:lmax+1,:lmax+1]
 
             # obs x input
             xl = curvedsky.utils.alm2cl(lmax,Tlm_obs,Tlm_inp)
@@ -474,7 +667,7 @@ def alm_comb(qids,qidc,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwarg
     #    mask_hp = enmap.to_healpix(mask_iv,nside=aobj[qid].nside)
     #    w1[qid] = get_wfactor(mask_hp)[1]
 
-    for rlz in tqdm.tqdm(aobj[qids[0]].rlz):
+    for rlz in tqdm.tqdm(aobj[qids[0]].rlz,desc='combine alms'):
 
         if misctools.check_path([aobj[qidc].falm['c']['T'][rlz],aobj[qidc].falm['n']['T'][rlz]],overwrite=overwrite,verbose=verbose): continue
 
@@ -496,46 +689,13 @@ def alm_comb(qids,qidc,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwarg
 
 
                 
-def create_mask_core(nside,lon,lat,theta,phi):
-    mask = np.zeros(12*nside**2)
-    mask[lon[0]>=theta] = 1.
-    mask[lon[1]<=theta] = 1.
-    mask[lat[0]>=phi] = 1.
-    mask[lat[1]<=phi] = 1.
-    return mask
-
-
-def create_mask(nside,\
-                lonras = [[186.8,187.8],[187.2,188.2],[208.8,209.8],[237,237.7],[164.3,164.9],[225.7,226.3]],\
-                latras = [[1.5,2.5],[12.1,12.8],[19,19.7],[2.3,3],[1.3,1.9],[10.2,10.8]],\
-               ascale=0.5):
-    
-    pixel_theta, pixel_phi = hp.pix2ang(nside, np.arange(12*nside**2), lonlat=True)
-    maskpt = 1.
-    
-    for lonra, latra in zip(lonras,latras):
-        maskpt *= create_mask_core(nside,lonra,latra,pixel_theta,pixel_phi)
-    if ascale!= 0.:
-        maskpt = curvedsky.utils.apodize(nside,maskpt,ascale)
-
-    return maskpt
-
 
 def diff_day_night(qid_d,qid_n,qid,overwrite=False,verbose=True,mtype=['T'],**kwargs):
 
     aobj = { q: local.init_analysis_params(qid=q,**kwargs) for q in [qid_d,qid_n,qid] }
     cl   = { s: np.zeros((len(aobj[qid].rlz),6,aobj[qid].lmax+1)) for s in ['c','s','n'] }
 
-    # ptsr mask
-    if 'raw' in qid:
-        mask = 1.
-    else: 
-        mask = create_mask(aobj[qid].nside)
-        if 'ov' in qid: # restrict to s16 region
-            mask *= hp.fitsfunc.read_map(aobj[qid].s16mask)
-        
-
-    for ii, rlz in enumerate(tqdm.tqdm(aobj[qid_d].rlz)):
+    for ii, rlz in enumerate(tqdm.tqdm(aobj[qid_d].rlz,desc='day - night')):
 
         if misctools.check_path(aobj[qid].falm['c']['T'][rlz],overwrite=overwrite,verbose=verbose): continue
 
@@ -555,13 +715,12 @@ def diff_day_night(qid_d,qid_n,qid,overwrite=False,verbose=True,mtype=['T'],**kw
                 Talm0 = pickle.load(open(aobj[qid_d].falm[s]['T'][rlz],"rb"))
                 Talm1 = pickle.load(open(aobj[qid_n].falm[s]['T'][rlz],"rb"))
             
-            # save diff alm for each rlz
-            if not 'raw' in qid:
-                dTalm = curvedsky.utils.mulwin(aobj[qid_d].nside, aobj[qid_d].lmax, aobj[qid_d].lmax, Talm0-Talm1, mask)
-            else:
-                dTalm = Talm0 - Talm1
-            pickle.dump( dTalm, open(aobj[qid].falm[s]['T'][rlz],"wb"), protocol=pickle.HIGHEST_PROTOCOL )
+            dTalm = Talm0 - Talm1
 
+            if s == 'c':
+                pickle.dump( dTalm, open(aobj[qid].falm[s]['T'][rlz],"wb"), protocol=pickle.HIGHEST_PROTOCOL )
+
+            # aps
             cl[s][ii,0,:] = curvedsky.utils.alm2cl(aobj[qid].lmax,dTalm)
         
             # save cl for each rlz
@@ -575,22 +734,6 @@ def diff_day_night(qid_d,qid_n,qid,overwrite=False,verbose=True,mtype=['T'],**kw
             np.savetxt(aobj[qid].fscl[s],np.concatenate((aobj[qid].l[None,:],np.mean(cl[s][imin:,:,:],axis=0),np.std(cl[s][imin:,:,:],axis=0))).T)
 
         
-def wfactors(qids,ascale):
-    w = {}
-
-    for q in qids:
-        if q not in ['boss_01','boss_02','boss_03','boss_04']:
-            qid = 'boss_03'
-        else:
-            qid = q
-        aobj = local.init_analysis_params(qid=qid,ascale=ascale)
-        mask_iv = load_mask(qid)
-        mask_hp = enmap.to_healpix(mask_iv,nside=512)
-        amask = hp.ud_grade(hp.fitsfunc.read_map(aobj.amask),512)
-        w[q] = get_wfactor(mask_hp*amask)
-
-    return w
-
 
 '''
 def alm2aps_null(qid,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwargs):

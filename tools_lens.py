@@ -14,6 +14,7 @@ import quad_func
 
 # local
 import local
+import tools_cmb
 
 
 def load_input_plm(fpalm,lmax,verbose=False):
@@ -23,7 +24,10 @@ def load_input_plm(fpalm,lmax,verbose=False):
     # load input phi alms
     alm = np.complex128(hp.fitsfunc.read_alm(fpalm))
     # convert order of (l,m) to healpix format
-    alm = curvedsky.utils.lm_healpy2healpix(len(alm),alm,5100)[:lmax+1,:lmax+1]
+    alm = curvedsky.utils.lm_healpy2healpix(alm,5100)[:lmax+1,:lmax+1]
+    # convert to kappa
+    L = np.linspace(0,lmax,lmax+1)
+    alm = L[:,None]*(L[:,None]+1)*alm/2.
 
     return alm
 
@@ -64,18 +68,32 @@ def aps(qobj,rlzs,fpalm,wn,verbose=True,meansub=True):
             np.savetxt(qobj.f[q].mcls,np.concatenate((qobj.l[None,:],np.mean(cl[1:,:,:],axis=0),np.std(cl[1:,:,:],axis=0))).T)
 
 
-def interface(aobj,wn,run=['norm','qrec','n0','mean','aps'],meansub=True,ocl=None,kwargs_ov={},kwargs_qrec={}):
 
-    if ocl is None:
+def interface(qid,run=['norm','qrec','n0','mean','aps'],meansub=True,kwargs_ov={},kwargs_cmb={},kwargs_qrec={}):
+
+    #if ocl is None:
         # Compute filtering
-        ocl = np.ones((3,aobj.lmax+1))
-        ocl[0,:] = (np.loadtxt(aobj.fscl['c'])).T[1]
+        #ocl = np.ones((3,aobj.lmax+1))
+        #ocl[0,:] = (np.loadtxt(aobj.fscl['c'])).T[1]
     
         # observed cl (no suppression)
         #Aobj = {q: local.init_analysis_params(qid=q,ascale=aobj.ascale) for q in qids}
         #ncl  = {q: (np.loadtxt(Aobj[q].fscl['n'])).T[1] for q in qids}
         #Ncl  = tools_cmb.comb_Nl(qids,ncl)
         #ocl  = Aobj.lcl[0,:] + Ncl
+
+    aobj = local.init_analysis_params(qid=qid,**kwargs_cmb)
+    
+    if qid == 'diff_dn':
+        aobj_c = local.init_analysis_params(qid='comb_dn',**kwargs_cmb)
+    else:
+        aobj_c = local.init_analysis_params(qid=qid,**kwargs_cmb)
+
+    ocl = np.ones((3,aobj_c.lmax+1))
+    ocl[0,:] = (np.loadtxt(aobj_c.fscl['c'])).T[1]
+
+    # load wfactors
+    wn = tools_cmb.get_wfactors([aobj.qid],aobj.ascale,wtype=aobj.wtype)[aobj.qid]
 
     ifl = ocl#p.lcl[0:3,:]
 
