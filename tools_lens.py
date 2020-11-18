@@ -93,7 +93,7 @@ def interface(qid,run=['norm','qrec','n0','mean','aps'],meansub=True,kwargs_ov={
     ocl[0,:] = (np.loadtxt(aobj_c.fscl['c'])).T[1]
 
     # load wfactors
-    wn = tools_cmb.get_wfactors([aobj.qid],aobj.ascale,wtype=aobj.wtype)[aobj.qid]
+    wn = tools_cmb.get_wfactors([aobj.qid],aobj.ascale,wind=aobj.wind,ivar=aobj.ivar,ptsr=aobj.ptsr)[aobj.qid]
 
     ifl = ocl#p.lcl[0:3,:]
 

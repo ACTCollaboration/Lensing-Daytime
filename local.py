@@ -14,7 +14,6 @@ from soapack import interfaces
 # from cmblensplus/wrap/
 
 # from cmblensplus/utils/
-import constants
 import misctools
 import binning as bn
 
@@ -52,7 +51,7 @@ def data_directory(root='/global/homes/t/toshiyan/Work/Ongoing/act_lens/'):
 # Define analysis parameters
 class analysis_setup():
 
-    def __init__(self,snmin=0,snmax=100,qid='boss_d01',fltr='none',lmin=1,lmax=4096,clmin=100,olmin=1,olmax=2048,bn=30,nside=2048,wtype='base',ascale=1.):
+    def __init__(self,snmin=0,snmax=100,qid='boss_d01',fltr='none',lmin=1,lmax=4096,clmin=100,olmin=1,olmax=2048,bn=30,nside=2048,wind='base',ivar='base',ptsr='PT',ascale=1.):
 
         #//// load config file ////#
         conf = misctools.load_config('CMB')
@@ -87,9 +86,17 @@ class analysis_setup():
         self.nside  = conf.getint('nside',nside) #Nside for fullsky cmb map
         self.npix   = 12*self.nside**2
 
-        # window
-        self.wtype  = conf.get('wtype',wtype)
+        # window, ivar, ptsr
+        self.wind   = conf.get('wind',wind)
         self.ascale = conf.getfloat('ascale',ascale)
+        self.apotag = 'a'+str(self.ascale)+'deg'
+        self.ivar   = conf.get('ivar',ivar)
+        self.ptsr   = conf.get('ptsr',ptsr)
+
+        if self.fltr == 'cinv':
+            self.wtype = '_'.join( [ self.wind, self.ivar, self.ptsr ] )
+        else:
+            self.wtype = '_'.join( [ self.wind, self.ivar, self.ptsr, self.apotag ] )
 
         # do
         self.doreal = conf.getboolean('doreal',False)
@@ -104,15 +111,6 @@ class analysis_setup():
         d_alm = d['cmb'] + 'alm/'
         d_aps = d['cmb'] + 'aps/'
         d_msk = d['cmb'] + 'mask/'
-
-        #//// basic tags ////#
-        # for alm
-        apotag = 'a'+str(self.ascale)+'deg'
-        self.stag = '_'.join( [ self.qid , self.wtype , apotag , self.fltr , 'lc'+str(self.clmin) ] )
-        self.ntag = '_'.join( [ self.qid , self.wtype , apotag , self.fltr , 'lc'+str(self.clmin) ] )
-
-        # output multipole range
-        self.otag = '_oL'+str(self.olmin)+'-'+str(self.olmax)+'_b'+str(self.bn)
 
         #//// index ////#
         self.ids = [str(i).zfill(5) for i in range(-1,1000)]
@@ -135,6 +133,10 @@ class analysis_setup():
         # aps of Planck 2015 best fit cosmology
         self.fucl = d['local'] + 'input/cosmo2017_10K_acc3_scalCls.dat'
         self.flcl = d['local'] + 'input/cosmo2017_10K_acc3_lensedCls.dat'
+
+        #//// basic tags for alm ////#
+        self.stag = '_'.join( [ self.qid , self.wtype , self.fltr , 'lc'+str(self.clmin) ] )
+        self.ntag = '_'.join( [ self.qid , self.wtype , self.fltr , 'lc'+str(self.clmin) ] )
 
         #//// Derived data filenames ////#
         # cmb signal/noise alms
@@ -161,18 +163,22 @@ class analysis_setup():
         self.fbeam = d['local'] + 'beam/' + self.qid+'.dat'
         
         # custom mask
-        if self.wtype == 'base':
-            self.amask = d_msk + self.qid+'_'+self.wtype+'_'+apotag+'.fits'
-        if 'com16' in self.wtype:
-            self.amask = d_msk + 'common_s16_'+apotag+'.fits'
-        if 'com15' in self.wtype:
-            self.amask = d_msk + 'common_s15_'+apotag+'.fits'
-        if 'iso15' in self.wtype:
-            self.amask = d_msk + 'isolate_s15_'+apotag+'.fits'
+        if self.wind == 'base':
+            self.amask = d_msk + self.qid+'_base_'+self.apotag+'.fits'
+        if self.wind == 'com16':
+            self.amask = d_msk + 'common_s16_'+self.apotag+'.fits'
+        if self.wind == 'com15':
+            self.amask = d_msk + 'common_s15_'+self.apotag+'.fits'
+        if self.wind == 'iso15':
+            self.amask = d_msk + 'isolate_s15_'+self.apotag+'.fits'
         
         # ptsr mask
         self.fptsr_old = d_msk + 'custom_ptsr_square_mask.fits'
         self.fptsr = d_msk + 'ptsr_cat_crossmatched.fits'
+
+        #//// basic tags ////#
+        # output multipole range
+        self.otag = '_oL'+str(self.olmin)+'-'+str(self.olmax)+'_b'+str(self.bn)
 
 
     def array(self):

@@ -41,11 +41,23 @@ def interface(run,qids,kwargs_ov={},kwargs={}):
         for qid_d, qid_n in zip(local.boss_d,local.boss_n):
             diff_day_night(qid_d,qid_n,'diff_'+qid_n,mtype=['T'],**kwargs_ov,**kwargs)
 
+    if 's16' in run:
+    
+        qid_dn = ['comb_s16d']
+        qids_d = local.s_16_d
+
+        # comb day or night
+        print('combine alm for day')
+        alm_comb(qids_d,qid_dn[0],mtype=['T'],**kwargs_ov,**kwargs)    
+        alm2aps(qid_dn,mtype=['T'],**kwargs_ov,**kwargs)
+        alm_supfac(qid_dn,**kwargs_ov,**kwargs)
+
+
     if 'comb' in run:
     
         qid_dn = ['comb_d','comb_n']
-        if 'iso15' in kwargs['wtype']:
-            if 'V3' in kwargs['wtype']:
+        if kwargs['wind'] == 'iso15':
+            if kwargs['ivar'] == 'V3':
                 qids_d = ['boss_d02','boss_d03','boss_d04']
                 qids_n = ['boss_02','boss_03','boss_04']
                 #qids_d = local.boss_d
@@ -53,7 +65,7 @@ def interface(run,qids,kwargs_ov={},kwargs={}):
             else:
                 qids_d = ['boss_d03']
                 qids_n = ['boss_03','boss_04']
-        elif 'com15' in kwargs['wtype']:
+        elif kwargs['wind'] == 'com15':
             qids_d = local.boss_d
             qids_n = local.boss_n
         else:
@@ -260,27 +272,25 @@ def load_survey_mask(qid,dg=2):
 
 def load_ivar_curvedsky(aobj):
     
-    wtype = (aobj.wtype).replace('pt','')
-    
-    if 'vc' in wtype:
-        if '16' in wtype:
+    if aobj.ivar == 'vc':
+        if '16' in aobj.wind:
             return hp.fitsfunc.read_map(aobj.fivar16,verbose=False)
-        elif '15' in wtype:
+        elif '15' in aobj.wind:
             return hp.fitsfunc.read_map(aobj.fivar15,verbose=False)
         else:
             sys.exit('ivar is not well defined')
-    elif 'vd' in wtype:
+    elif aobj.ivar == 'vd':
         ivar = enmap.read_map( aobj.fivarvd )
         return enmap.to_healpix(ivar[0],nside=aobj.nside)
-    elif 'v3' in wtype:
+    elif aobj.ivar == 'v3':
         ivar = enmap.read_map( local.init_analysis_params(qid='boss_d03').fivar )
         return enmap.to_healpix(ivar[0],nside=aobj.nside)
-    elif 'V3' in wtype:
+    elif aobj.ivar == 'V3':
         ivar = enmap.read_map( local.init_analysis_params(qid='boss_d03').fivar ) ** 2
         return enmap.to_healpix(ivar[0],nside=aobj.nside)
-    elif 'v0' in wtype:
+    elif aobj.ivar == 'noivar':
         return 1.
-    elif wtype == 'base':
+    elif aobj.ivar == 'base':
         ivar = enmap.read_map( aobj.fivar )
         return enmap.to_healpix(ivar[0],nside=aobj.nside)
     else:
@@ -353,7 +363,7 @@ def create_ptsr_mask(nside,ascale=0.5,threshold=.0,extend=3.):
     return maskpt
 
 
-def load_window_curvedsky( aobj, survey_mask=True, with_ivar=True, ivar_norm=False ):
+def load_window_curvedsky( aobj, survey_mask=True, with_ivar=True, ivar_norm=False, add_mask=True ):
 
     # load survey mask
     if survey_mask and ( aobj.qid in local.qid_all ):
@@ -362,27 +372,26 @@ def load_window_curvedsky( aobj, survey_mask=True, with_ivar=True, ivar_norm=Fal
     else:
         mask = 1.
 
+    # load additional apodization mask
+    if add_mask and ( ( aobj.ascale!=1. and aobj.qid in local.qid_all ) or 'com' in aobj.wind or 'iso' in aobj.wind ) :
+        amask = hp.fitsfunc.read_map( aobj.amask, verbose=False )
+    else:
+        amask = 1.
+
     # load ivar
-    if with_ivar:
+    if aobj.ivar!='noivar' and with_ivar:
         ivar = load_ivar_curvedsky(aobj)
         if ivar_norm:
             ivar = ivar/np.max(ivar)
     else:
         ivar = 1.
 
-    # load additional apodization mask
-    if ( aobj.ascale!=1. and aobj.qid in local.qid_all ) or 'com' in aobj.wtype or 'iso' in aobj.wtype:
-        amask = hp.fitsfunc.read_map( aobj.amask, verbose=False )
-    #elif aobj.ascale!=1. and aobj.qid not in local.qid_all:
-    #    amask = hp.fitsfunc.read_map( local.init_analysis_params(qid='boss_03').amask ,verbose=False)
-    else:
-        amask = 1.
-
     # load ptsr mask for day
-    if 'pt' in aobj.wtype:
-        ptsr = hp.fitsfunc.read_map( aobj.fptsr_old ,verbose=False )
-        #ptsr = create_ptsr_mask_old(aobj.nside)
-    elif 'PT' in aobj.wtype:
+    #if 'pt' in aobj.wtype:
+    #    ptsr = hp.fitsfunc.read_map( aobj.fptsr_old ,verbose=False )
+    #    #ptsr = create_ptsr_mask_old(aobj.nside)
+    #elif 'PT' in aobj.wtype:
+    if aobj.ptsr == 'PT':
         ptsr = hp.fitsfunc.read_map( aobj.fptsr ,verbose=False )
         #ptsr = create_ptsr_mask(aobj.nside)
     else:
@@ -400,10 +409,10 @@ def get_wfactor(mask,wnmax=5):
     return wn
     
 
-def get_wfactors(qids,ascale,wtype='base',with_ivar=True,ivar_norm=False,wnmax=5):
+def get_wfactors(qids,ascale,wind='base',ivar='base',ptsr='PT',with_ivar=True,ivar_norm=False,wnmax=5):
     w = {}
     for q in qids:
-        aobj = local.init_analysis_params(qid=q,ascale=ascale,wtype=wtype)
+        aobj = local.init_analysis_params(qid=q,ascale=ascale,wind=wind,ivar=ivar,ptsr=ptsr)
         mask = load_window_curvedsky(aobj,with_ivar=with_ivar,ivar_norm=ivar_norm)
         w[q] = get_wfactor(mask,wnmax=wnmax)
     return w
@@ -466,18 +475,6 @@ def map2alm(qids,overwrite=False,verbose=True,ascale=1.,**kwargs):
 
         # total mask
         mask = load_window_curvedsky( aobj, survey_mask=False )
-        #civar = load_ivar_curvedsky(aobj)
-
-        # change apodization
-        #if ascale != 1. or 'com' in aobj.wtype or 'iso' in aobj.wtype:
-        #    if verbose: print('correct apodization mask')
-        #    amask = hp.fitsfunc.read_map(aobj.amask,verbose=False)
-            
-        # load ptsr mask for day
-        #if 'pt' in aobj.wtype:
-        #    ptsr = create_ptsr_mask(aobj.nside)
-        #else:
-        #    ptsr = 1.
 
         # loop for map -> alm
         for i in tqdm.tqdm(aobj.rlz,desc='map -> alm'):
@@ -733,7 +730,51 @@ def diff_day_night(qid_d,qid_n,qid,overwrite=False,verbose=True,mtype=['T'],**kw
         for s in ['c','s','n']:
             np.savetxt(aobj[qid].fscl[s],np.concatenate((aobj[qid].l[None,:],np.mean(cl[s][imin:,:,:],axis=0),np.std(cl[s][imin:,:,:],axis=0))).T)
 
-        
+
+
+def wiener_cinv_core(qid,verbose=True,kwargs_cmb={},kwargs_cinv={}):
+    
+    aobj = local.init_analysis_params(qid=qid,fltr='cinv',**kwargs_cmb)
+    
+    # beam
+    bl = beam_func(aobj.lmax,aobj.qid)
+
+    # binary mask
+    mask = load_window_curvedsky( aobj, with_ivar=False, add_mask=False )
+    mask[mask!=0] = 1.
+
+    # noise spectrum
+    #Nlw = (65.*(np.pi/10800.)/local.Tcmb)**2
+    Aobj = local.init_analysis_params(qid=qid,fltr='none',wind='com16',ivar='noivar')
+    Nl  = np.loadtxt(Aobj.fscl['n'],unpack=True)[1]
+    inl = np.zeros((1,1,aobj.lmax+1))
+    inl[0,0,2:] = 1./Nl[2:]
+    
+    # inv noise covariance
+    Nij = np.zeros((1,1,aobj.npix))
+    Nvar = load_ivar_curvedsky(aobj)
+    Nvar[Nvar<=0] = 1e-60
+    Nij[0,0,:] = mask * np.sqrt( Nvar/np.max(Nvar) ) #/ Nlw
+    
+    # temperature map
+    T  = np.zeros((1,1,aobj.npix))  
+    
+    for rlz in aobj.rlz:
+    
+        if rlz==0: 
+            Tc = enmap.read_map(aobj.fmap['s'][rlz])[0]
+            T[0,0,:] = mask * enmap.to_healpix( remove_lxly( Tc, lmin=aobj.clmin, lmax=aobj.lmax ), nside=aobj.nside )
+        else:
+            Ts = enmap.read_map(aobj.fmap['s'][rlz])[0]
+            Tn = enmap.read_map(aobj.fmap['n'][rlz])[0]
+            T[0,0,:] = mask * enmap.to_healpix( remove_lxly( Ts+Tn, lmin=aobj.clmin, lmax=aobj.lmax ), nside=aobj.nside )
+    
+        # cinv
+        Tlm = curvedsky.cninv.cnfilter_freq(1,1,aobj.nside,aobj.lmax,aobj.lcl[0:1,:],np.reshape(bl,(1,aobj.lmax+1)),Nij,T,verbose=verbose,inl=inl,**kwargs_cinv)
+        pickle.dump((Tlm[0,:,:]),open(aobj.falm['c']['T'][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+
+
+
 
 '''
 def alm2aps_null(qid,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwargs):

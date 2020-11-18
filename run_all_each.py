@@ -7,14 +7,14 @@ import numpy as np, sys, local, tools_lens, quad_func, tools_cmb
 ow = False
 vb = False
 
-kwargs = {'snmin':0,'snmax':100,'ascale':3.0,'wtype':'iso15v3pt'}
+kwargs = {'snmin':0,'snmax':100,'ascale':3.0,'wind':'iso15','ivar':'v3'}
 
 # individual
 for qid_d, qid_n in zip(local.boss_d,local.boss_n):
     tools_cmb.diff_day_night(qid_d,qid_n,'diff_'+qid_n,overwrite=ow,verbose=True,mtype=['T'],**kwargs)
 
 kwargs_ov = {'overwrite':ow}
-kwargs0 = {'snmin':1,'snmax':100,'ascale':3.0,'wtype':'com16v3'}
+kwargs0 = {'snmin':1,'snmax':100,'ascale':3.0,'wind':'com16','ivar':'v3'}
 
 kwargs_qrec0 = {'n0max':50,'mfmax':100,'rlmin':500,'qlist':['TT'],'bhe':['src']}
 kwargs_qrec1 = {'n0max':50,'mfmax':100,'rlmin':500,'qlist':['TT']}

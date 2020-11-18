@@ -6,7 +6,7 @@ import local
 import tools_lens
 import quad_func
 
-kwargs = {'snmin':0,'snmax':100,'ascale':3.0,'wtype':'com16v3'}
+kwargs = {'snmin':0,'snmax':100,'ascale':3.0,'wind':'com16','ivar':'v0'}
 kwargs_ov = {'overwrite':False}
 
 kwargs_qrec0 = {'n0max':50,'mfmax':100,'rlmin':500,'qlist':['TT'],'bhe':['src']}
