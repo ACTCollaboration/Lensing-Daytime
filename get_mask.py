@@ -14,8 +14,9 @@ from soapack import interfaces
 #run = ['apod']
 #run = ['iso']
 #run = ['com']
-#run = ['ptsr']
 run = ['PTSR']
+ptsr = 'base'
+#run = ['cinv']
 
     
 if 'apod' in run:
@@ -31,7 +32,7 @@ if 'apod' in run:
 
         for q in qids:
         
-            mask_iv = tools_cmb.load_mask(q,with_ivar=False)
+            mask_iv = tools_cmb.load_survey_mask(q)
             mask = enmap.to_healpix(mask_iv[0],nside=2048)
     
             if ap != 1.:
@@ -44,7 +45,36 @@ if 'apod' in run:
             hp.fitsfunc.write_map(aobj[q].amask,amask,overwrite=True)
 
 
-if 'com' in run: 
+if 'cinv' in run:
+
+    # for different apodization scales
+    for wqid in local.wqids:
+
+        aobj = local.init_analysis_params(qid=wqid,ascale=0.)
+        window = 1.
+        
+        for q in local.get_subqids(wqid):
+        
+            mask = tools_cmb.load_survey_mask(q)
+            Mask = enmap.to_healpix(mask,nside=2048)
+            Mask[Mask!=0.] = 1.
+            print(q,np.average(Mask),np.max(Mask))
+            window *= (1.-Mask)
+
+        # binary
+        window = 1.-window
+        print('save to '+aobj.amask)
+        print(wqid,np.average(window),np.max(window))
+        hp.fitsfunc.write_map(aobj.amask,window,overwrite=True)
+
+        # apodization
+        aobj = local.init_analysis_params(qid=wqid,ascale=1.)
+        amask  = cs.utils.apodize(2048,window,aobj.ascale)
+        print('save to '+aobj.amask)
+        hp.fitsfunc.write_map(aobj.amask,amask,overwrite=True)
+
+            
+if 'com' in run: # overlapped region
 
     for wtype in ['com15','com16']:
         
@@ -94,21 +124,21 @@ if 'iso' in run:
         hp.fitsfunc.write_map(aobj.amask,amask,overwrite=True)
 
 
-if 'ptsr' in run:
+#if 'ptsr' in run:
     
-    print('creating old ptsr mask')
+#    print('creating old ptsr mask')
     
-    aobj = local.init_analysis_params()
-    ptsr = tools_cmb.create_ptsr_mask_old(aobj.nside)
-    hp.fitsfunc.write_map(aobj.fptsr_old,ptsr,overwrite=True)
+#    aobj = local.init_analysis_params()
+#    ptsr = tools_cmb.create_ptsr_mask_old(aobj.nside)
+#    hp.fitsfunc.write_map(aobj.fptsr_old,ptsr,overwrite=True)
 
 
 if 'PTSR' in run:
     
     print('creating ptsr mask')
     
-    aobj = local.init_analysis_params()
-    ptsr = tools_cmb.create_ptsr_mask(aobj.nside)
-    hp.fitsfunc.write_map(aobj.fptsr,ptsr,overwrite=True)
+    aobj = local.init_analysis_params(ptsr=ptsr)
+    mask = tools_cmb.create_ptsr_mask(aobj.nside,ptsr=aobj.ptsr)
+    hp.fitsfunc.write_map(aobj.fptsr,mask,overwrite=True)
 
 

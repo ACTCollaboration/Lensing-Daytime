@@ -5,6 +5,7 @@ import healpy as hp
 import sys
 import configparser
 import pickle
+from matplotlib.pyplot import *
 
 # from act library
 from pixell import enmap
@@ -15,11 +16,14 @@ from soapack import interfaces
 
 # from cmblensplus/utils/
 import misctools
+import plottools as pl
 import binning as bn
+import analysis as ana
 
 
 # fixed values
 Tcmb = 2.726e6
+ac2rad = np.pi/10800.
 
 boss_d = ['boss_d01','boss_d02','boss_d03','boss_d04']
 s_16_d = ['s16_d01','s16_d02','s16_d03']
@@ -28,6 +32,91 @@ boss_dn = boss_d + boss_n
 day_all = boss_d + s_16_d
 qid_all = day_all + boss_n
 
+# qid for combined case
+wqids = ['boss_s15d','boss_s15dn','boss_s15n','boss_s16d','boss_alld','boss_alldn']
+
+#-----------------
+# qid info
+#-----------------
+
+def get_subqids(wqid):
+    
+    if wqid == 'boss_s15d':  qids = boss_d
+    if wqid == 'boss_s15n':  qids = boss_n
+    if wqid == 'boss_s15dn': qids = boss_dn
+    if wqid == 'boss_s16d':  qids = s_16_d
+    if wqid == 'boss_alld':  qids = day_all
+    if wqid == 'boss_alldn': qids = qid_all
+    
+    return qids
+
+
+def qid_info(qid):
+
+    if qid in ['bndn_01','bndn_02','boss_d01','boss_d02','boss_d03','boss_d04','s16_d01','s16_d02','s16_d03']:
+        model = 'dr5'
+    if qid in ['boss_01','boss_02','boss_03','boss_04','s16_01','s16_02','s16_03']:
+        model = 'act_mr3'
+    
+    if model == 'act_mr3':
+
+        if qid == 'boss_01':
+            season, array, patch, freq = ('s15', 'pa1', 'boss','f150')
+        if qid == 'boss_02':
+            season, array, patch, freq = ('s15', 'pa2', 'boss','f150')
+        if qid == 'boss_03':
+            season, array, patch, freq = ('s15', 'pa3', 'boss','f090')
+        if qid == 'boss_04':
+            season, array, patch, freq = ('s15', 'pa3', 'boss','f150')
+
+    if model == 'dr5':
+        
+        dm = interfaces.models['dr5']()
+        season, array, patch, freq = (dm.ainfo(qid,'season'), dm.ainfo(qid,'array'), dm.ainfo(qid,'region'), dm.ainfo(qid,'freq'))
+        
+    return  model, season, array, patch, freq
+     
+    
+def qid_label(qid):
+    
+    table = {'boss_01':'S15 PA1 f150 night', \
+             'boss_02':'S15 PA2 f150 night', \
+             'boss_03':'S15 PA3 f090 night', \
+             'boss_04':'S15 PA3 f150 night', \
+             'boss_d01':'S15 PA1 f150 day', \
+             'boss_d02':'S15 PA2 f150 day', \
+             'boss_d03':'S15 PA3 f090 day', \
+             'boss_d04':'S15 PA3 f150 day', \
+             's16_d01':'S16 PA2 f150 day', \
+             's16_d02':'S16 PA3 f090 day', \
+             's16_d03':'S16 PA3 f150 day', \
+            }
+    
+    return  table[qid]
+
+
+def qid_wnoise(qid):
+    # white noise level at season 16 region (deepest region)
+    
+    table = {'boss_01':70., \
+             'boss_02':35., \
+             'boss_03':30., \
+             'boss_04':45., \
+             'boss_d01':70., \
+             'boss_d02':40., \
+             'boss_d03':30., \
+             'boss_d04':45., \
+             's16_d01':30., \
+             's16_d02':30., \
+             's16_d03':40., \
+            }
+    
+    return  table[qid]*ac2rad/Tcmb
+
+
+#------------------
+# file directories
+#------------------
 
 # Define directory
 def data_directory(root='/global/homes/t/toshiyan/Work/Ongoing/act_lens/'):
@@ -47,6 +136,10 @@ def data_directory(root='/global/homes/t/toshiyan/Work/Ongoing/act_lens/'):
 
     return direct
 
+
+#-----------------
+# analysis object
+#-----------------
 
 # Define analysis parameters
 class analysis_setup():
@@ -88,7 +181,10 @@ class analysis_setup():
 
         # window, ivar, ptsr
         self.wind   = conf.get('wind',wind)
-        self.ascale = conf.getfloat('ascale',ascale)
+        if self.fltr == 'cinv':
+            self.ascale = 0.
+        else:
+            self.ascale = conf.getfloat('ascale',ascale)
         self.apotag = 'a'+str(self.ascale)+'deg'
         self.ivar   = conf.get('ivar',ivar)
         self.ptsr   = conf.get('ptsr',ptsr)
@@ -163,18 +259,15 @@ class analysis_setup():
         self.fbeam = d['local'] + 'beam/' + self.qid+'.dat'
         
         # custom mask
-        if self.wind == 'base':
+        if self.wind == 'base': # no restriction to area
             self.amask = d_msk + self.qid+'_base_'+self.apotag+'.fits'
-        if self.wind == 'com16':
-            self.amask = d_msk + 'common_s16_'+self.apotag+'.fits'
-        if self.wind == 'com15':
-            self.amask = d_msk + 'common_s15_'+self.apotag+'.fits'
-        if self.wind == 'iso15':
-            self.amask = d_msk + 'isolate_s15_'+self.apotag+'.fits'
+        else:
+            self.amask = d_msk + self.wind+'_'+self.apotag+'.fits'
         
         # ptsr mask
-        self.fptsr_old = d_msk + 'custom_ptsr_square_mask.fits'
-        self.fptsr = d_msk + 'ptsr_cat_crossmatched.fits'
+        #self.fptsr_old = d_msk + 'custom_ptsr_square_mask.fits'
+        #self.fptsr = d_msk + 'ptsr_cat_crossmatched.fits'
+        self.fptsr = d_msk + 'ptsr_'+self.ptsr+'.fits'
 
         #//// basic tags ////#
         # output multipole range
@@ -212,51 +305,6 @@ def init_analysis_params(**kwargs):
     analysis_setup.array(aobj)
     return aobj
       
-
-def qid_info(qid):
-
-    if qid in ['bndn_01','bndn_02','boss_d01','boss_d02','boss_d03','boss_d04','s16_d01','s16_d02','s16_d03']:
-        model = 'dr5'
-    if qid in ['boss_01','boss_02','boss_03','boss_04','s16_01','s16_02','s16_03']:
-        model = 'act_mr3'
-    
-    if model == 'act_mr3':
-
-        if qid == 'boss_01':
-            season, array, patch, freq = ('s15', 'pa1', 'boss','f150')
-        if qid == 'boss_02':
-            season, array, patch, freq = ('s15', 'pa2', 'boss','f150')
-        if qid == 'boss_03':
-            season, array, patch, freq = ('s15', 'pa3', 'boss','f090')
-        if qid == 'boss_04':
-            season, array, patch, freq = ('s15', 'pa3', 'boss','f150')
-
-    if model == 'dr5':
-        
-        dm = interfaces.models['dr5']()
-        season, array, patch, freq = (dm.ainfo(qid,'season'), dm.ainfo(qid,'array'), dm.ainfo(qid,'region'), dm.ainfo(qid,'freq'))
-        
-    return  model, season, array, patch, freq
-     
-    
-def qid_label(qid):
-    
-    table = {'boss_01':'S15 PA1 f150 night', \
-             'boss_02':'S15 PA2 f150 night', \
-             'boss_03':'S15 PA3 f090 night', \
-             'boss_04':'S15 PA3 f150 night', \
-             'boss_d01':'S15 PA1 f150 day', \
-             'boss_d02':'S15 PA2 f150 day', \
-             'boss_d03':'S15 PA3 f090 day', \
-             'boss_d04':'S15 PA3 f150 day', \
-             's16_d01':'S16 PA2 f150 day', \
-             's16_d02':'S16 PA3 f090 day', \
-             's16_d03':'S16 PA3 f150 day', \
-            }
-    
-    return  table[qid]
-
-
 
 # ----------
 # Test
@@ -305,6 +353,7 @@ def load_spec(qobj,mb,rlz=None,cn=1,outN0=False):
     l, al = (np.loadtxt(qobj.f['TT'].al,usecols=(0,cn))).T
     l, n0 = (np.loadtxt(qobj.f['TT'].n0bs,usecols=(0,cn))).T
     if rlz is None:
+        #rd = n0.copy()
         rd = (np.loadtxt(qobj.f['TT'].rdn0[0])).T[cn]
         fcl = qobj.f['TT'].cl[:101]
     else:
@@ -331,3 +380,25 @@ def load_spec(qobj,mb,rlz=None,cn=1,outN0=False):
     else:
         return Mkk, Vkk, Skk, Okk
 
+
+def plot_spec_kk(qobj,rlz=None,cn=1,lmin=40,lmax=2048,bnum=10,output=True,verbose=True,lfac=0.0,plot_real=False,yrange=False):
+    # compute binned spectrum
+    mb = bn.multipole_binning(bnum,lmin=lmin,lmax=lmax)
+    Mkk, Vkk, Skk, Okk, nb = load_spec(qobj,mb,rlz=rlz,cn=cn,outN0=True)
+    if verbose: print(np.sqrt(np.sum(Mkk**2/Vkk**2)))
+    # statistics
+    st = ana.amplitude(Mkk,Skk,fcb=None,diag=False,disp=True)
+    # plot
+    if yrange:
+        pl.plot_1dstyle(fsize=[10,4],xmin=mb.lmin,xmax=lmax,ymin=-2e-8,ymax=1.2e-7,ylab='$L^{'+str(lfac)+'}C_L^{\kappa\kappa}$')
+    else:
+        pl.plot_1dstyle(fsize=[10,4],xmin=mb.lmin,xmax=lmax,ylab='$L^{'+str(lfac)+'}C_L^{\kappa\kappa}$')
+    aobj = init_analysis_params()
+    s = mb.bc**lfac
+    if plot_real:
+        errorbar(mb.bc+5,s*Okk,yerr=s*Vkk,fmt='o')
+    else:
+        errorbar(mb.bc+5,s*Mkk,yerr=s*Vkk,fmt='o')
+        plot(aobj.l,aobj.l**lfac*aobj.ckk,color='k',ls='--')
+    axhline(0,color='k')
+    show()
