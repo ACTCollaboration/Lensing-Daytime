@@ -16,22 +16,29 @@ kwargs_ov = {\
 kwargs_apod = {\
     'snmin': 0, \
     'snmax': 100, \
-    'ivar': 'noivar', \
+    #'snmax': 0, \
     'wind': 'base', \
+    #'wind': 'com16', \
+    #'ivar': 'noivar', \
+    'ivar': 'base', \
+    'fltr': 'none', \
+    'ptsr': 'base', \
 }
 
 #//// for combined data set ////#
 
+#qids = ['boss_d03']
+#cqid = None
+
+cqid = 'boss_s16d'
 #cqid = 'boss_s15d'
 #cqid = 'boss_s15n'
-#cqid = 'boss_s16d'
-#cqid = 'boss_s15dn'
-cqid = 'boss_alldn'
-
-#run = ['alm','aps','comb']
-#run = ['aps','comb']
-run = ['comb']
-
 qids = local.get_subqids(cqid)
+
+#run = ['alm']
+run = ['alm','aps']
+#run = ['aps']
+#run = []
+
 interface(run,qids,cqid=cqid,kwargs_ov=kwargs_ov,kwargs=kwargs_apod)
 

@@ -5,6 +5,9 @@ import sys
 import pickle
 import tqdm
 
+# from ACT modules
+from pixell import enmap
+
 # from cmblensplus/wrap/
 import curvedsky
 
@@ -40,21 +43,11 @@ def aps(qobj,rlzs,fpalm,wn,verbose=True,mean_sub=True):
         cl = np.zeros((len(rlzs),4,qobj.olmax+1))
 
         W2, W4 = wn[2], wn[4]
-        
-        #if mean_sub:
-        #    mfg, mfc = pickle.load(open(qobj.f[q].MFalm,"rb"))
-        #else:
-        #    mfg, mfc = 0., 0.
 
         for ii, rlz in enumerate(tqdm.tqdm(rlzs,ncols=100,desc='each rlz ('+q+'):')):
 
             # load reconstructed kappa and curl alms with mean-field correction
             glm, clm = quad_func.load_rec_alm(qobj,q,rlz,mean_sub=mean_sub)
-            #glm, clm = pickle.load(open(qobj.f[q].alm[rlz],"rb"))
-            #if meansub:
-            #    mfg, mfc = pickle.load(open(qobj.f[q].mfalm[rlz],"rb"))
-            #else:
-            #    mfg, mfc = 0., 0.
 
             # load kappa
             if rlz != 0:
@@ -85,9 +78,6 @@ def interface(qid,run=['norm','qrec','n0','mean','aps'],mean_sub=True,kwargs_ov=
         # same as aobj
         aobj_c = local.init_analysis_params(qid=qid,**kwargs_cmb)
 
-    # load wfactors
-    wn = tools_cmb.get_wfactors([aobj.qid],aobj.ascale,wind=aobj.wind,ivar=aobj.ivar,ptsr=aobj.ptsr,fltr=aobj.fltr)[aobj.qid]
-
     if aobj.fltr == 'cinv':
 
         # filter
@@ -104,10 +94,21 @@ def interface(qid,run=['norm','qrec','n0','mean','aps'],mean_sub=True,kwargs_ov=
                     bobj = local.init_analysis_params(qid=q,fltr='none',wind='base',ivar='base')
                 nl += 1. / ( np.loadtxt(bobj.fscl['n'],unpack=True)[1] + ep )
             nl = 1./(nl+ep)
+            # load wfactors
+            print('computing W factor')
+            W = 1.
+            for q in qids:
+                W *= 1. - enmap.to_healpix(tools_cmb.load_survey_mask(q),nside=aobj.nside)
+            wn = np.zeros(5)
+            wn[0] = np.mean(1.-W)
+            wn[:] = wn[0]
+            print('W factor:',wn[0])
         else:
             # white
             bl  = tools_cmb.beam_func(aobj.lmax,aobj.qid)
             nl  = ( local.qid_wnoise(qid) / bl )**2
+            wn = tools_cmb.get_wfactors([aobj.qid],aobj.ascale,wind=aobj.wind,ivar=aobj.ivar,ptsr=aobj.ptsr,fltr=aobj.fltr)[aobj.qid]
+            wn[:] = wn[0]
         
         # corrected factors
         cnl = aobj.lcl[0,:] + nl
@@ -117,9 +118,12 @@ def interface(qid,run=['norm','qrec','n0','mean','aps'],mean_sub=True,kwargs_ov=
         ocl = np.reshape( cnl ,(1,aobj.lmax+1) )
         ifl = np.reshape( aobj.lcl[0,:], (1,aobj.lmax+1) )
 
-        wn[:] = wn[0]
+        #wn = tools_cmb.get_wfactors([aobj.qid],1.,wind='base',ptsr=aobj.ptsr,fltr='cinv')[aobj.qid]
 
     else:
+
+        # load wfactors
+        wn = tools_cmb.get_wfactors([aobj.qid],aobj.ascale,wind=aobj.wind,ivar=aobj.ivar,ptsr=aobj.ptsr,fltr=aobj.fltr)[aobj.qid]
 
         # filter
         ocl = np.ones((3,aobj_c.lmax+1))

@@ -10,7 +10,10 @@ kwargs_cmb = {\
     'snmin':0, \
     'snmax':100, \
     'fltr':'none', \
-    'ivar':'noivar' \
+    'wind':'com16', \
+    'ivar':'noivar', \
+    #'ivar':'base', \
+    'ptsr':'base', \
 }
 
 kwargs_ov = {\
@@ -31,9 +34,9 @@ kwargs_q1['bhe'] = ['src']
 
 for kwargs_q in [kwargs_q0,kwargs_q1]:
 #for kwargs_q in [kwargs_q0]:
-    #for qid in ['boss_s15n']:
+    #for qid in ['boss_d03']:
     #for qid in ['boss_s15dn']:
-    #for qid in ['boss_s16d']:
-    for qid in ['boss_alldn']:
+    for qid in ['boss_s16d']:
         tools_lens.interface(qid,run=['norm','qrec','n0','rdn0','mean','aps'],kwargs_ov=kwargs_ov,kwargs_cmb=kwargs_cmb,kwargs_qrec=kwargs_q)
+        #tools_lens.interface(qid,run=['aps'],kwargs_ov=kwargs_ov,kwargs_cmb=kwargs_cmb,kwargs_qrec=kwargs_q)
 

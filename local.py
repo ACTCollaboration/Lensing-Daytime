@@ -144,7 +144,7 @@ def data_directory(root='/global/homes/t/toshiyan/Work/Ongoing/act_lens/'):
 # Define analysis parameters
 class analysis_setup():
 
-    def __init__(self,snmin=0,snmax=100,qid='boss_d01',fltr='none',lmin=1,lmax=4096,clmin=100,olmin=1,olmax=2048,bn=30,nside=2048,wind='base',ivar='base',ptsr='PT',ascale=1.):
+    def __init__(self,snmin=0,snmax=100,qid='boss_d01',fltr='none',lmin=1,lmax=4096,clmin=100,olmin=1,olmax=2048,bn=30,nside=2048,wind='base',ivar='base',ptsr='base',ascale=1.):
 
         #//// load config file ////#
         conf = misctools.load_config('CMB')
@@ -343,6 +343,7 @@ def show_kmap(klm=None,fname=None,lmin=200,lmax=1024,nside=1024,v=.1,lonra=[147,
         Flm = klm.copy()
     Flm[:lmin,:] = 0.
     kmap = curvedsky.utils.hp_alm2map(nside,lmax,lmax,Flm[:lmax+1,:lmax+1])
+    print('max,min:',np.max(kmap),np.min(kmap))
     hp.cartview(kmap,lonra=lonra,latra=latra,min=-v,max=v,cbar=False,title=title)
     if output:
         return kmap
@@ -381,7 +382,7 @@ def load_spec(qobj,mb,rlz=None,cn=1,outN0=False):
         return Mkk, Vkk, Skk, Okk
 
 
-def plot_spec_kk(qobj,rlz=None,cn=1,lmin=40,lmax=2048,bnum=10,output=True,verbose=True,lfac=0.0,plot_real=False,yrange=False):
+def plot_spec_kk(qobj,rlz=None,cn=1,lmin=40,lmax=2048,bnum=10,output=True,verbose=True,lfac=0.0,plot_real=False,ymin=-.2,ymax=1.5,norm=1.):
     # compute binned spectrum
     mb = bn.multipole_binning(bnum,lmin=lmin,lmax=lmax)
     Mkk, Vkk, Skk, Okk, nb = load_spec(qobj,mb,rlz=rlz,cn=cn,outN0=True)
@@ -389,16 +390,51 @@ def plot_spec_kk(qobj,rlz=None,cn=1,lmin=40,lmax=2048,bnum=10,output=True,verbos
     # statistics
     st = ana.amplitude(Mkk,Skk,fcb=None,diag=False,disp=True)
     # plot
-    if yrange:
-        pl.plot_1dstyle(fsize=[10,4],xmin=mb.lmin,xmax=lmax,ymin=-2e-8,ymax=1.2e-7,ylab='$L^{'+str(lfac)+'}C_L^{\kappa\kappa}$')
-    else:
-        pl.plot_1dstyle(fsize=[10,4],xmin=mb.lmin,xmax=lmax,ylab='$L^{'+str(lfac)+'}C_L^{\kappa\kappa}$')
+    pl.plot_1dstyle(fsize=[10,4],xmin=mb.lmin,xmax=lmax,ymin=ymin,ymax=ymax,ylab='$10^7L^{'+str(lfac)+'}C_L^{\kappa\kappa}$')
     aobj = init_analysis_params()
-    s = mb.bc**lfac
+    s = mb.bc**lfac*norm*1e7
     if plot_real:
         errorbar(mb.bc+5,s*Okk,yerr=s*Vkk,fmt='o')
     else:
         errorbar(mb.bc+5,s*Mkk,yerr=s*Vkk,fmt='o')
-        plot(aobj.l,aobj.l**lfac*aobj.ckk,color='k',ls='--')
+        plot(aobj.l,1e7*aobj.l**lfac*aobj.ckk,color='k',ls='--')
     axhline(0,color='k')
     show()
+
+    
+def plot_bias(qobj,cn=1,normcorr=False,plot_real=False,fac=1.,frac=False,r2=0.23/0.51,r4=0.15/0.52):
+    l, al = (np.loadtxt(qobj.f['TT'].al,usecols=(0,cn))).T
+    l, n0 = (np.loadtxt(qobj.f['TT'].n0bs,usecols=(0,cn))).T
+    #l, ml = (np.loadtxt(qobj.f['TT'].MFcl,usecols=(0,cn))).T
+    l, cl, xl, kk = (np.loadtxt(qobj.f['TT'].mcls,usecols=(0,cn,3,4))).T
+    ol = (np.loadtxt(qobj.f['TT'].cl[0])).T[cn]
+    rd = (np.loadtxt(qobj.f['TT'].rdn0[0])).T[cn]
+    if normcorr:
+        xl = xl/r2
+        cl = cl/r4
+        n0 = n0/r4
+        CL = cl-n0
+        OL = (ol-rd)/r4
+    else:
+        CL = cl-n0
+        OL = ol-rd
+    if frac:
+        pl.plot_1dstyle(fsize=[15,4],xmin=2,xmax=2048,ymin=.1,ymax=2.,ylab=r'Ratio of $C_L^{\kappa\kappa}$')
+        plot(l,CL/kk,label='cl',color='r')
+        plot(l,xl/kk,label='xl',color='g')
+        axhline(1,color='k',ls='--')
+        legend()
+    else:
+        pl.plot_1dstyle(fsize=[15,4],xmin=2,xmax=2048,ymin=1e-9,ymax=1e-5,ylog=True,ylab='$C_L^{\kappa\kappa}$')
+        if cn==1 and plot_real: 
+            plot(l,OL,label='ol',color='c')
+        else:
+            plot(l,al,label='norm',color='m')
+            plot(l,n0,label='N0',color='y')
+            plot(l,cl/99.,label='MF-MC',color='b',ls='--')
+            plot(l,CL,label='cl',color='r')
+            if cn==2: plot(l,OL,label='ol',color='c')
+            plot(l,xl,label='xl',color='g')
+            plot(l,kk,label='input',color='k')
+            legend()
+    return CL

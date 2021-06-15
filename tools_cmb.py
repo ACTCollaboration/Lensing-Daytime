@@ -30,7 +30,10 @@ import local
 def interface(run,qids,cqid=None,kwargs_ov={},kwargs={}):
     
     if 'alm' in run:
-        map2alm(qids,**kwargs_ov,**kwargs)
+        if kwargs['fltr'] == 'cinv':
+            sys.exit('interface function does not support cinv alm')
+        else:
+            map2alm(qids,**kwargs_ov,**kwargs)
 
     if 'aps' in run:
         alm2aps(qids,mtype=['T'],**kwargs_ov,**kwargs)
@@ -38,10 +41,10 @@ def interface(run,qids,cqid=None,kwargs_ov={},kwargs={}):
     if 'sup' in run:
         alm_supfac(qids,**kwargs_ov,**kwargs)
 
-    if 'comb' in run: # combine alms
-        if cqid is None: sys.exit('cqid is not specified')
+    if cqid is not None: # combine alms
         alm_comb(qids,cqid,mtype=['T'],**kwargs_ov,**kwargs)
-        alm2aps([cqid],mtype=['T'],**kwargs_ov,**kwargs)
+        if kwargs['ivar'] == 'noivar': #otherwise need to speficy appropriate W factor for combined case
+            alm2aps([cqid],mtype=['T'],**kwargs_ov,**kwargs)
         
     if 'each' in run:
         for qid_d, qid_n in zip(local.boss_d,local.boss_n):
@@ -110,9 +113,6 @@ def coadd_real_data(qid,mask,dg=2):
         datas = dm.get_splits(season=season,patch=patch,arrays=dm.array_freqs[array],srcfree=True)
         ivars = dm.get_splits_ivar(season=season,patch=patch,arrays=dm.array_freqs[array])
 
-    # normalize
-    #ivars = ivars_normalize(ivars)
-    
     # coadded map
     civars = np.average(ivars,axis=1) 
     civars[civars==0] = np.inf
@@ -148,17 +148,6 @@ def get_ivar(qid,mask,dg=2):
     return ivars
 
 
-def ivars_normalize(ivars):
-    
-    n1, n2, n3 = np.shape(ivars[:,:,:,0,0])
-    nivars = 0.*ivars
-    for i in range(n1):
-        for j in range(n2):
-            for k in range(n3):
-                nivars[i,j,k,:,:] = ivars[i,j,k,:,:]/np.max(ivars[i,j,k,:,:])
-    return nivars
-    
-
 def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
     # Here we compute the real coadd map and simulated maps from the noise covariance and pre-computed fullsky signal
     # This function uses actsims "simgen" code
@@ -192,10 +181,10 @@ def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
         aobj = { q: local.init_analysis_params(qid=q,**kwargs) for q in qid_array }
 
         # load survey mask
-        mask = load_survey_mask(qid,dg=1)[0]
+        mask = load_survey_mask(qid,dg=1)
         
         # Define an object for sim generation
-        model, season, array, patch, __ = local.qid_info(qid)
+        model, season, array, patch, freq = local.qid_info(qid)
         if model == 'dr5':
             simobj = simgen.SimGen(version=version,qid=qid_array,model=model)
         if model == 'act_mr3':
@@ -220,13 +209,24 @@ def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
 
             # real data
             if i == 0: 
+
+                # take coadd data
                 maps['s'] = coadd_real_data(qid_array,mask) 
+
+                # SZ map subtraction
+                shape, wcs = maps['s'][0,0,:,:].shape, maps['s'].wcs
+                if q in ['boss_d03','s16_d02','boss_03']: # need both freqs for combined data array of two freqs
+                    sz_map_090 = enmap.project(enmap.read_map('data_local/input/S18d_202006_confirmed_model_f090.fits'),shape,wcs)/local.Tcmb
+                    sz_map_150 = enmap.project(enmap.read_map('data_local/input/S18d_202006_confirmed_model_f150.fits'),shape,wcs)/local.Tcmb
+                    maps['s'][0,0,:,:] -= sz_map_090
+                    maps['s'][1,0,:,:] -= sz_map_150
+                else:
+                    sz_map = enmap.project(enmap.read_map('data_local/input/S18d_202006_confirmed_model_f150.fits'),shape,wcs)/local.Tcmb
+                    maps['s'][0,0,:,:] -= sz_map                
+
             # simulation
             else:
                 maps['s'], maps['n'], ivars = simobj.get_sim(season, patch, array, sim_num=i, set_idx=0)
-
-                # normalize
-                #ivars = ivars_normalize(ivars)
 
                 # coadd with civars weight implicitly multiplied
                 civars = np.average(ivars,axis=1)
@@ -239,9 +239,8 @@ def generate_map(qids,overwrite=False,verbose=True,dg=2,**kwargs):
                 maps['n'] = enmap.downgrade(maps['n'], dg)
 
             # save signal and noise to files
-            # data is saved to a signal file
             for s in ['s','n']:
-                if s=='n' and i==0: continue
+                if s=='n' and i==0: continue  # real data is saved to a signal file
                 for qi, q in enumerate(qid_array):
                     enmap.write_map(aobj[q].fmap[s][i],maps[s][qi,:,:,:])
 
@@ -297,33 +296,7 @@ def load_ivar_curvedsky(aobj):
         sys.exit('ivar is not well defined')
         
 
-#def create_square_mask(nside,lon,lat,theta,phi):
-#    mask = np.zeros(12*nside**2)
-#    mask[lon[0]>=theta] = 1.
-#    mask[lon[1]<=theta] = 1.
-#    mask[lat[0]>=phi] = 1.
-#    mask[lat[1]<=phi] = 1.
-#    return mask
-
-#def create_ptsr_mask_old(nside,\
-#            lonras = [[186.8,187.8],[187.2,188.2],[208.8,209.8],[237,237.7],[164.3,164.9],[225.7,226.3]],\
-#            latras = [[1.5,2.5],[12.1,12.8],[19,19.7],[2.3,3],[1.3,1.9],[10.2,10.8]],\
-            #lonras = [[186.8,187.8],[187.2,188.2],[164.3,164.9],[225.7,226.3]],\
-            #latras = [[1.5,2.5],[12.1,12.8],[1.3,1.9],[10.2,10.8]],\
-#            ascale=0.5):
-    
-#    pixel_theta, pixel_phi = hp.pix2ang(nside, np.arange(12*nside**2), lonlat=True)
-#    maskpt = 1.
-    
-#    for lonra, latra in zip(lonras,latras):
-#        maskpt *= create_square_mask(nside,lonra,latra,pixel_theta,pixel_phi)
-#    if ascale!= 0.:
-#        maskpt = curvedsky.utils.apodize(nside,maskpt,ascale)
-
-#    return maskpt
-
-
-def create_ptsr_mask(nside,ascale=0.5,threshold=.0,extend=1.,ptsr='PT'):
+def create_ptsr_mask(nside,ascale=0.5,threshold=.0,radius=10.,ptsr='base'):
 
     # from catalogue
     #ras, decs, size = np.loadtxt('data_local/input/cat_crossmatched.txt',unpack=True,usecols=(0,1,5))
@@ -331,24 +304,20 @@ def create_ptsr_mask(nside,ascale=0.5,threshold=.0,extend=1.,ptsr='PT'):
     #DECs = decs[size>threshold]
     #arcm = size[size>threshold] * extend
     
-    RAs, DECs = interfaces.get_act_mr3f_union_sources(version='20200503_sncut_40')
-    arcm = np.ones(len(RAs)) * 10. * extend
+    #RAs, DECs = interfaces.get_act_mr3f_union_sources(version='20200503_sncut_40')
+    RAs, DECs = interfaces.get_act_mr3f_union_sources(version='20210209_sncut_10_aggressive') 
+    arcm = np.ones(len(RAs)) * radius
 
     # additional mask
-    if ptsr in ['PT','base']:
-        if ptsr == 'PT':
-            RAs_add  = np.array([187.3])
-            DECs_add = np.array([2.])
-            arcm_add = np.array([40.])
-        if ptsr == 'base':
-            RAs_add  = np.array([187.3,187.7,209.3,164.6,226.])
-            DECs_add = np.array([2.,12.5,19.3,1.6,10.5])
-            arcm_add = np.array([40.,30.,10.,10.,10.])
+    if ptsr == 'PT':
+        RAs_add  = np.array([187.3])
+        DECs_add = np.array([2.])
+        arcm_add = np.array([40.])
         # add
         RAs  = np.concatenate((RAs,RAs_add))
         DECs = np.concatenate((DECs,DECs_add))
         arcm = np.concatenate((arcm,arcm_add))
-        
+
     # compute 3D positions
     v = hp.pixelfunc.ang2vec(RAs, DECs, lonlat=True)
     
@@ -365,27 +334,29 @@ def create_ptsr_mask(nside,ascale=0.5,threshold=.0,extend=1.,ptsr='PT'):
     return maskpt
 
 
-def load_window_curvedsky( aobj, survey_mask=True, with_ivar=True, ivar_norm=False, add_mask=True ):
-    # load combined window function in curvedsky (survey mask x inverse variance x additional mask x point source mask)
+def load_window_curvedsky( aobj, survey_mask=True, with_ivar=True, ivar_norm=False ):
+    # load combined window function in curvedsky (survey mask x inverse variance x point source mask)
 
-    # cinv case only loads survey_mask 
-    
-    # load base survey mask on healpix
-    if survey_mask and ( aobj.qid in local.qid_all ): # for individual array, freqs
-        mask = load_survey_mask(aobj.qid)
-        mask = enmap.to_healpix(mask,nside=aobj.nside)  # to healpix map
-    elif survey_mask and ( aobj.qid in local.wqids ): # combined case
-        mask = hp.fitsfunc.read_map( aobj.amask, verbose=False )
+    if survey_mask:
+        # Load the default survey mask from soapack and project it onto healpix grids
+        # (note that the mask is already apodized)
+
+        if aobj.fltr=='cinv' or (aobj.fltr=='none' and aobj.wind=='base' and aobj.ascale==1.):
+            # cinv case only loads survey_mask to make a boundary mask later
+            if aobj.qid in local.qid_all: # for individual array, freqs
+                mask = load_survey_mask(aobj.qid)
+                mask = enmap.to_healpix(mask,nside=aobj.nside)  # to healpix map
+            else:
+                sys.exit('there are only survey masks for individual array maps')
+
+        # Load other types of mask, including additional apodization (not equals to 1deg) and restricted boundary
+        else:
+            print('load custum mask',aobj.amask)
+            mask = hp.fitsfunc.read_map( aobj.amask, verbose=False )
     else:
         mask = 1.
 
-    # load additional mask for additional apodization (than 1deg) and restricted area
-    if add_mask and aobj.fltr!='cinv' and ( ( aobj.ascale!=1. and aobj.qid in local.qid_all ) or aobj.wind!='base' ) :
-        amask = hp.fitsfunc.read_map( aobj.amask, verbose=False )
-    else:
-        amask = 1.
-
-    # load ivar
+    # Load the default ivar map
     if with_ivar and aobj.ivar!='noivar' and aobj.fltr!='cinv':
         ivar = load_ivar_curvedsky(aobj)
         if ivar_norm:
@@ -394,16 +365,13 @@ def load_window_curvedsky( aobj, survey_mask=True, with_ivar=True, ivar_norm=Fal
         ivar = 1.
 
     # load ptsr mask for day
-    #if 'pt' in aobj.wtype:
-    #    ptsr = hp.fitsfunc.read_map( aobj.fptsr_old ,verbose=False )
-    #    #ptsr = create_ptsr_mask_old(aobj.nside)
-    #elif 'PT' in aobj.wtype:
-    if aobj.ptsr == 'PT': #and aobj.fltr!='cinv':
-        ptsr = hp.fitsfunc.read_map( aobj.fptsr ,verbose=False )
-    else:
+    if aobj.ptsr == '':
         ptsr = 1.
+    else:
+        print('load ptsr mask',aobj.fptsr)
+        ptsr = hp.fitsfunc.read_map( aobj.fptsr ,verbose=False )
 
-    return mask*ivar*amask*ptsr
+    return mask*ivar*ptsr
 
 
 def get_wfactor(mask,wnmax=5):
@@ -417,13 +385,21 @@ def get_wfactor(mask,wnmax=5):
     return wn
     
 
-def get_wfactors(qids,ascale,wind='base',ivar='base',ptsr='PT',fltr='none',with_ivar=True,ivar_norm=False,wnmax=5):
+def get_wfactors(qids,ascale,wind='base',ivar='base',ptsr='base',fltr='none',with_ivar=True,ivar_norm=False,wnmax=5):
     w = {}
     for q in qids:
         aobj = local.init_analysis_params(qid=q,ascale=ascale,wind=wind,ivar=ivar,ptsr=ptsr,fltr=fltr)
         mask = load_window_curvedsky(aobj,with_ivar=with_ivar,ivar_norm=ivar_norm)
         w[q] = get_wfactor(mask,wnmax=wnmax)
     return w
+
+
+def beam_func(lmax,qid):
+    
+    dm = interfaces.models['dr5']()
+    L  = np.arange(0, lmax+100, dtype=np.float)
+    Bl = dm.get_beam_func(L, qid)
+    return Bl[:lmax+1]
 
    
 def define_lmask(shape,wcs, lxcut = None, lycut = None, lmin = None, lmax = None):
@@ -440,13 +416,13 @@ def define_lmask(shape,wcs, lxcut = None, lycut = None, lmin = None, lmax = None
     if lycut is not None:
         output[np.where(np.abs(ly) < lycut),:] = 0
     return output
-    
 
-def remove_lxly(fmap,lmin=100,lmax=4096):
+
+def remove_lxly(fmap,lmin=100,lmax=4096,lxcut=90,lycut=50):
     
     alm = enmap.fft(fmap)
     shape, wcs = fmap.shape, fmap.wcs
-    kmask = define_lmask(shape,wcs,lmin=lmin,lmax=lmax,lxcut=90,lycut=50)
+    kmask = define_lmask(shape,wcs,lmin=lmin,lmax=lmax,lxcut=lxcut,lycut=lycut)
     #print(np.shape(kmask),np.shape(alm))
     alm[kmask<0.5] = 0
     fmap_fl = enmap.ifft(alm).real
@@ -462,17 +438,19 @@ def map2alm_core(fmap,aobj,amask):
     return alm
 
 
-def beam_func(lmax,qid):
-    
-    dm = interfaces.models['dr5']()
-    L  = np.arange(0, lmax+100, dtype=np.float)
-    Bl = dm.get_beam_func(L, qid)
-    return Bl[:lmax+1]
+def map2alm_core_spin(Qmap,Umap,aobj,amask):
+
+    Qmap_fl = remove_lxly( Qmap, lmin=aobj.clmin, lmax=aobj.lmax )
+    Umap_fl = remove_lxly( Umap, lmin=aobj.clmin, lmax=aobj.lmax )
+    Qmap_hp = enmap.to_healpix( Qmap_fl, nside=aobj.nside )
+    Umap_hp = enmap.to_healpix( Umap_fl, nside=aobj.nside )
+    Ealm, Balm = curvedsky.utils.hp_map2alm_spin( aobj.nside, aobj.lmax, aobj.lmax, 2, Qmap_hp*amask, Umap_hp*amask )
+
+    return Ealm, Balm
 
 
 def map2alm(qids,overwrite=False,verbose=True,ascale=1.,**kwargs):
 
-    
     # loop over qid
     for q in qids:
         
@@ -482,62 +460,89 @@ def map2alm(qids,overwrite=False,verbose=True,ascale=1.,**kwargs):
         Bl = beam_func(aobj.lmax,q)
 
         # total mask
-        mask = load_window_curvedsky( aobj, survey_mask=False )
+        mask = load_window_curvedsky( aobj )
 
         # loop for map -> alm
         for i in tqdm.tqdm(aobj.rlz,desc='map -> alm'):
-        
-            if misctools.check_path(aobj.falm['c']['T'][i],overwrite=overwrite,verbose=verbose): continue
-            
-            if i == 0: 
 
-                maps_c = enmap.read_map(aobj.fmap['s'][i])[0]
-                alm_c = map2alm_core( maps_c, aobj, mask ) / Bl[:,None]
-                pickle.dump((alm_c),open(aobj.falm['c']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
-
-            else:
+            for tp in ['T','P']:
                 
-                maps_s = enmap.read_map(aobj.fmap['s'][i])[0]
-                maps_n = enmap.read_map(aobj.fmap['n'][i])[0]
+                if tp=='T' and misctools.check_path(aobj.falm['c']['T'][i],overwrite=overwrite,verbose=verbose): continue
+                if tp=='P' and misctools.check_path([aobj.falm['c']['E'][i],aobj.falm['c']['B'][i]],overwrite=overwrite,verbose=verbose): continue
+            
+                if i == 0: 
 
-                alm_s = map2alm_core( maps_s, aobj, mask ) / Bl[:,None]
-                alm_n = map2alm_core( maps_n, aobj, mask ) / Bl[:,None]
+                    if tp=='T':
+                        Tmap_c = enmap.read_map(aobj.fmap['s'][i])[0]
+                        Talm_c = map2alm_core( Tmap_c, aobj, mask ) / Bl[:,None]
+                        pickle.dump((Talm_c),open(aobj.falm['c']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
 
-                pickle.dump((alm_n),open(aobj.falm['n']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
-                pickle.dump((alm_s+alm_n),open(aobj.falm['c']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                    if tp=='P':
+                        Qmap_c = enmap.read_map(aobj.fmap['s'][i])[1]
+                        Umap_c = enmap.read_map(aobj.fmap['s'][i])[2]
+                        Ealm_c, Balm_c = map2alm_core_spin( Qmap_c, Umap_c, aobj, mask ) / Bl[:,None]
+                        pickle.dump((Ealm_c),open(aobj.falm['c']['E'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                        pickle.dump((Balm_c),open(aobj.falm['c']['E'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+
+                else:
+
+                    if tp=='T':
+                        Tmap_s = enmap.read_map(aobj.fmap['s'][i])[0]
+                        Tmap_n = enmap.read_map(aobj.fmap['n'][i])[0]
+                        Talm_s = map2alm_core( Tmap_s, aobj, mask ) / Bl[:,None]
+                        Talm_n = map2alm_core( Tmap_n, aobj, mask ) / Bl[:,None]
+                        pickle.dump((Talm_n),open(aobj.falm['n']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                        pickle.dump((Talm_s+Talm_n),open(aobj.falm['c']['T'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                        
+                    if tp=='P':
+
+                        Qmap_s = enmap.read_map(aobj.fmap['s'][i])[1]
+                        Qmap_n = enmap.read_map(aobj.fmap['n'][i])[1]
+                        Umap_s = enmap.read_map(aobj.fmap['s'][i])[2]
+                        Umap_n = enmap.read_map(aobj.fmap['n'][i])[2]
+
+                        Ealm_s, Balm_s = map2alm_core_spin( Qmap_s, Umap_s, aobj, mask ) / Bl[:,None]
+                        Ealm_n, Balm_n = map2alm_core_spin( Qmap_n, Umap_n, aobj, mask ) / Bl[:,None]
+
+                        pickle.dump((Ealm_n),open(aobj.falm['n']['E'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                        pickle.dump((Ealm_s+Ealm_n),open(aobj.falm['c']['E'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                        pickle.dump((Balm_n),open(aobj.falm['n']['B'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                        pickle.dump((Balm_s+Balm_n),open(aobj.falm['c']['B'][i],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
 
 
 
-def alm2aps_core(lmax,falm,w2=1.,mtype=['T']):
+def alm2aps_core(lmax,alms,w2=1.):
 
     cl = np.zeros((6,lmax+1))
     
+    mtype = alms.keys()
+    
     # compute cls
     if 'T' in mtype:  
-        Talm = pickle.load(open(falm['T'],"rb"))
-        cl[0,:] = curvedsky.utils.alm2cl(lmax,Talm)
+        #Talm = pickle.load(open(falm['T'],"rb"))
+        cl[0,:] = curvedsky.utils.alm2cl(lmax,alms['T'])
 
     if 'E' in mtype:  
-        Ealm = pickle.load(open(falm['E'],"rb"))
-        cl[1,:] = curvedsky.utils.alm2cl(lmax,Ealm)
+        #Ealm = pickle.load(open(falm['E'],"rb"))
+        cl[1,:] = curvedsky.utils.alm2cl(lmax,alms['E'])
 
     if 'B' in mtype:  
-        Balm = pickle.load(open(falm['B'],"rb"))
-        cl[2,:] = curvedsky.utils.alm2cl(lmax,Balm)
+        #Balm = pickle.load(open(falm['B'],"rb"))
+        cl[2,:] = curvedsky.utils.alm2cl(lmax,alms['B'])
 
     if 'T' in mtype and 'E' in mtype:
-        cl[3,:] = curvedsky.utils.alm2cl(lmax,Talm,Ealm)
+        cl[3,:] = curvedsky.utils.alm2cl(lmax,alms['T'],alms['E'])
 
     if 'T' in mtype and 'B' in mtype:
-        cl[4,:] = curvedsky.utils.alm2cl(lmax,Talm,Balm)
+        cl[4,:] = curvedsky.utils.alm2cl(lmax,alms['T'],alms['B'])
 
     if 'E' in mtype and 'B' in mtype:
-        cl[5,:] = curvedsky.utils.alm2cl(lmax,Ealm,Balm)
+        cl[5,:] = curvedsky.utils.alm2cl(lmax,alms['E'],alms['B'])
 
     return cl/w2
         
 
-def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],cns=['c','n','s'],W2=None,**kwargs):
+def alm2aps(qids,overwrite=False,verbose=True,mtype=['T','E','B'],cns=['c','n','s'],W2=None,**kwargs):
 
     for qid in qids: 
         
@@ -545,10 +550,6 @@ def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],cns=['c','n','s'],W2=N
         if aobj.fltr == 'cinv': cns = ['c']
         
         if W2 is None:
-            #if aobj.fltr=='cinv':
-            #    mask = load_window_curvedsky( aobj, with_ivar=False, add_mask=False )
-            #    mask[mask!=0] = 1.
-            #else:
             mask = load_window_curvedsky(aobj)
             w2 = get_wfactor(mask)[2]
         else:
@@ -564,19 +565,19 @@ def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],cns=['c','n','s'],W2=N
             if misctools.check_path(aobj.fcls['c'][rlz],overwrite=overwrite,verbose=verbose): continue
 
             if rlz == 0:
-                fnames = { m: aobj.falm['c'][m][rlz] for m in mtype }
-                cl['c'][ii,:,:] = alm2aps_core(aobj.lmax,fnames,w2=w2,mtype=mtype)
+                alms = { m: pickle.load(open(aobj.falm['c'][m][rlz],"rb")) for m in mtype }
+                cl['c'][ii,:,:] = alm2aps_core(aobj.lmax,alms,w2=w2)
             else:
                 for s in cns:
                     if s=='s': continue # signal part will be computed from combined - noise
-                    fnames = { m: aobj.falm[s][m][rlz] for m in mtype }
-                    cl[s][ii,:,:] = alm2aps_core(aobj.lmax,fnames,w2=w2,mtype=mtype)
+                    alms = { m: pickle.load(open(aobj.falm[s][m][rlz],"rb")) for m in mtype }
+                    cl[s][ii,:,:]   = alm2aps_core(aobj.lmax,alms,w2=w2)
 
+                # signal part
                 if 's' in cns:
-                    # signal part
-                    Tclm = pickle.load(open(aobj.falm['c']['T'][rlz],"rb"))
-                    Tnlm = pickle.load(open(aobj.falm['n']['T'][rlz],"rb"))
-                    cl['s'][ii,0,:] = curvedsky.utils.alm2cl(aobj.lmax,Tclm-Tnlm)/w2
+                    # combined - noise = signal
+                    alms = { m: pickle.load(open(aobj.falm['c'][m][rlz],"rb")) - pickle.load(open(aobj.falm['n'][m][rlz],"rb")) for m in mtype }
+                    cl['s'][ii,:,:] = alm2aps_cor(aobj.lmax,alms,w2=w2)
  
             # save cl for each rlz
             np.savetxt(aobj.fcls['c'][rlz],np.concatenate((aobj.l[None,:],cl['c'][ii,:,:])).T)
@@ -593,62 +594,6 @@ def alm2aps(qids,overwrite=False,verbose=True,mtype=['T'],cns=['c','n','s'],W2=N
                 np.savetxt(aobj.fscl[s],np.concatenate((aobj.l[None,:],np.mean(cl[s][imin:,:,:],axis=0),np.std(cl[s][imin:,:,:],axis=0))).T)
 
 
-def alm_supfac(qids,W1=None,overwrite=False,verbose=True,**kwargs):
-
-    del kwargs['snmin'] # set snmin to 1 below
-    
-    for qid in qids:
-
-        aobj = local.init_analysis_params(qid=qid,snmin=1,**kwargs)
-
-        if misctools.check_path(aobj.fsup,overwrite=overwrite,verbose=verbose): continue
-
-        if W1 is None:
-            mask = load_window_curvedsky(aobj)
-            w1 = get_wfactor(mask)[1]
-        else:
-            if isinstance(W1,dict):
-                w1 = W1[qid]
-            else:
-                w1 = W1
-            
-        lmax = aobj.lmax
-        rl = np.zeros((len(aobj.rlz),2,lmax+1))
-
-        for ii, rlz in enumerate(tqdm.tqdm(aobj.rlz,desc='compute supfac')):
- 
-            # projected signal alm
-            if aobj.fltr=='cinv':
-                Tlm_c = pickle.load(open(aobj.falm['c']['T'][rlz],"rb"))
-                Tlm_s = 0.*Tlm_c
-            else:
-                Tlm_c = pickle.load(open(aobj.falm['c']['T'][rlz],"rb"))
-                Tlm_n = pickle.load(open(aobj.falm['n']['T'][rlz],"rb"))
-                Tlm_s = Tlm_c - Tlm_n
-            
-            # input fullsky signal alm
-            f = '/project/projectdirs/act/data/actsims_data/signal_v0.4/fullskyLensedUnabberatedCMB_alm_set00_'+str(rlz).zfill(5)+'.fits'
-            Tlm_inp = np.complex128( hp.fitsfunc.read_alm( f, hdu = (1) ) ) / local.Tcmb
-            ilmax = hp.sphtfunc.Alm.getlmax(len(Tlm_inp))
-            Tlm_inp = curvedsky.utils.lm_healpy2healpix(Tlm_inp, ilmax)[:lmax+1,:lmax+1]
-
-            # obs x input
-            xl = curvedsky.utils.alm2cl(lmax,Tlm_c,Tlm_inp)
-            sl = curvedsky.utils.alm2cl(lmax,Tlm_s,Tlm_inp)
-            
-            # input auto
-            cl = curvedsky.utils.alm2cl(lmax,Tlm_inp)
-            
-            # take ratio to get suppression factor
-            rl[ii,0,2:] = xl[2:]/cl[2:]
-            rl[ii,1,2:] = sl[2:]/cl[2:]
-
-        # save to file
-        mrl = np.mean(rl,axis=0)
-        np.savetxt( aobj.fsup, np.concatenate( ( aobj.l[None,:], mrl, mrl/w1 ) ).T )
-        
-
-
 def comb_Nl(qids,ncl,rcl=None):
 
     Nl = 0.*ncl[qids[0]]
@@ -663,50 +608,43 @@ def comb_Nl(qids,ncl,rcl=None):
 
 
 
-def alm_comb(qids,qidc,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwargs):
+def alm_comb(qids,qidc,overwrite=False,verbose=True,mtypes=['T','E','B'],ep=1e-30,**kwargs):
 
     # qids = qid to be combined
     # qidc = output qid
     
     aobj = {q: local.init_analysis_params(qid=q,**kwargs) for q in qids+[qidc]}
+    mid  = {'T':1,'E':2,'B':3}
 
-    # pre-computed spectra
-    #mcl  = {q: (np.loadtxt(aobj[q].fscl['c'])).T[1] for q in qids}
-    ncl  = {q: (np.loadtxt(aobj[q].fscl['n'])).T[1] for q in qids}
-    # sup fac
-    #fcl  = {q: (np.loadtxt(aobj[q].fsup)).T[1] for q in qids}
-    #rcl  = {q: (np.loadtxt(aobj[q].fsup)).T[2] for q in qids}
-    #Ncl  = comb_Nl(qids,ncl,rcl)
-    Ncl  = comb_Nl(qids,ncl)
-
-    #w1 = {}
-    #for qid in qids:
-    #    mask_iv = load_mask(qid)
-    #    mask_hp = enmap.to_healpix(mask_iv,nside=aobj[qid].nside)
-    #    w1[qid] = get_wfactor(mask_hp)[1]
+    ncl = {}
+    Ncl = {}
+    for mi, m in mtype:
+        # pre-computed noise spectra for inverse-variance weighting
+        ncl[m]  = {q: (np.loadtxt(aobj[q].fscl['n'])).T[mid[m]] for q in qids}
+        # norm
+        Ncl[m]  = comb_Nl(qids,ncl)
 
     for rlz in tqdm.tqdm(aobj[qids[0]].rlz,desc='combine alms'):
 
-        if misctools.check_path([aobj[qidc].falm['c']['T'][rlz],aobj[qidc].falm['n']['T'][rlz]],overwrite=overwrite,verbose=verbose): continue
+        for m in mtype:
+        
+            if misctools.check_path([aobj[qidc].falm['c'][m][rlz],aobj[qidc].falm['n'][m][rlz]],overwrite=overwrite,verbose=verbose): continue
 
-        wTlm = {}
-        for s in ['c','n']:
-            for m in mtype:
+            walm = {}
+            for s in ['c','n']:
+            
                 if rlz == 0 and s in ['n']: continue
-                wTlm[s,m] = 0.
+                walm[s,m] = 0.
                 for q in qids:
                     # walm = 1/N alm = 1/(N/r^2) alm/r
-                    wTlm[s,m] += 1./ncl[q][:,None] * pickle.load(open(aobj[q].falm[s]['T'][rlz],"rb")) #/ w1[q]
+                    walm[s,m] += 1./ncl[m][q][:,None] * pickle.load(open(aobj[q].falm[s][m][rlz],"rb")) #/ w1[q]
                     #wTlm[s,m] += rcl[q][:,None]/(ncl[q][:,None]+ep) * pickle.load(open(aobj[q].falm[s]['T'][rlz],"rb")) #/ w1[q]
-                    wTlm[s,m][:2,:] = 0.
+                    walm[s,m][:2,:] = 0.
         
-                wTlm[s,m] *= Ncl[:,None]
+                walm[s,m] *= Ncl[m][:,None]
                 # save alm for each rlz
-                pickle.dump((wTlm[s,m]),open(aobj[qidc].falm[s][m][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
-                pickle.dump((wTlm[s,m]),open(aobj[qidc].falm[s][m][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
+                pickle.dump((walm[s,m]),open(aobj[qidc].falm[s][m][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
 
-
-                
 
 def diff_day_night(qid_d,qid_n,qid,overwrite=False,verbose=True,mtype=['T'],**kwargs):
 
@@ -776,7 +714,7 @@ def wiener_cinv_core(qids,wqid,white=False,kwargs_ov={'overwrite':False,'verbose
         bl[i,:] = beam_func(Aobj[q].lmax,Aobj[q].qid)
 
         # binary mask
-        mask[q] = load_window_curvedsky( Aobj[q], with_ivar=False, add_mask=False )
+        mask[q] = load_window_curvedsky( Aobj[q], with_ivar=False )
         mask[q][mask[q]!=0] = 1.
         
         # inv noise covariance
@@ -792,10 +730,10 @@ def wiener_cinv_core(qids,wqid,white=False,kwargs_ov={'overwrite':False,'verbose
         else:
 
             if q in local.boss_d:
-                # averaged noise spectrum at S16
-                bobj = local.init_analysis_params(qid=q,fltr='none',wind='com16',ivar='base')
+                # averaged noise spectrum at S16 region
+                bobj = local.init_analysis_params(qid=q,fltr='none',wind='com16',ivar='base',ptsr=aobj.ptsr)
             if q in local.boss_n or q in local.s_16_d:
-                bobj = local.init_analysis_params(qid=q,fltr='none',wind='base',ivar='base')
+                bobj = local.init_analysis_params(qid=q,fltr='none',wind='base',ivar='base',ptsr=aobj.ptsr)
 
             Nl  = np.loadtxt(bobj.fscl['n'],unpack=True)[1]
             inl[0,i,2:] = 1. / (Nl[2:]*bl[i,2:]**2)
@@ -836,7 +774,101 @@ def wiener_cinv_core(qids,wqid,white=False,kwargs_ov={'overwrite':False,'verbose
 
 
 
+# No longer used
+
 '''
+
+def alm_supfac(qids,W1=None,overwrite=False,verbose=True,**kwargs):
+
+    del kwargs['snmin'] # set snmin to 1 below
+    
+    for qid in qids:
+
+        aobj = local.init_analysis_params(qid=qid,snmin=1,**kwargs)
+
+        if misctools.check_path(aobj.fsup,overwrite=overwrite,verbose=verbose): continue
+
+        if W1 is None:
+            mask = load_window_curvedsky(aobj)
+            w1 = get_wfactor(mask)[1]
+        else:
+            if isinstance(W1,dict):
+                w1 = W1[qid]
+            else:
+                w1 = W1
+            
+        lmax = aobj.lmax
+        rl = np.zeros((len(aobj.rlz),2,lmax+1))
+
+        for ii, rlz in enumerate(tqdm.tqdm(aobj.rlz,desc='compute supfac')):
+ 
+            # projected signal alm
+            if aobj.fltr=='cinv':
+                Tlm_c = pickle.load(open(aobj.falm['c']['T'][rlz],"rb"))
+                Tlm_s = 0.*Tlm_c
+            else:
+                Tlm_c = pickle.load(open(aobj.falm['c']['T'][rlz],"rb"))
+                Tlm_n = pickle.load(open(aobj.falm['n']['T'][rlz],"rb"))
+                Tlm_s = Tlm_c - Tlm_n
+            
+            # input fullsky signal alm
+            f = '/project/projectdirs/act/data/actsims_data/signal_v0.4/fullskyLensedUnabberatedCMB_alm_set00_'+str(rlz).zfill(5)+'.fits'
+            Tlm_inp = np.complex128( hp.fitsfunc.read_alm( f, hdu = (1) ) ) / local.Tcmb
+            ilmax = hp.sphtfunc.Alm.getlmax(len(Tlm_inp))
+            Tlm_inp = curvedsky.utils.lm_healpy2healpix(Tlm_inp, ilmax)[:lmax+1,:lmax+1]
+
+            # obs x input
+            xl = curvedsky.utils.alm2cl(lmax,Tlm_c,Tlm_inp)
+            sl = curvedsky.utils.alm2cl(lmax,Tlm_s,Tlm_inp)
+            
+            # input auto
+            cl = curvedsky.utils.alm2cl(lmax,Tlm_inp)
+            
+            # take ratio to get suppression factor
+            rl[ii,0,2:] = xl[2:]/cl[2:]
+            rl[ii,1,2:] = sl[2:]/cl[2:]
+
+        # save to file
+        mrl = np.mean(rl,axis=0)
+        np.savetxt( aobj.fsup, np.concatenate( ( aobj.l[None,:], mrl, mrl/w1 ) ).T )
+        
+
+def create_square_mask(nside,lon,lat,theta,phi):
+    mask = np.zeros(12*nside**2)
+    mask[lon[0]>=theta] = 1.
+    mask[lon[1]<=theta] = 1.
+    mask[lat[0]>=phi] = 1.
+    mask[lat[1]<=phi] = 1.
+    return mask
+
+def create_ptsr_mask_old(nside,\
+            lonras = [[186.8,187.8],[187.2,188.2],[208.8,209.8],[237,237.7],[164.3,164.9],[225.7,226.3]],\
+            latras = [[1.5,2.5],[12.1,12.8],[19,19.7],[2.3,3],[1.3,1.9],[10.2,10.8]],\
+            #lonras = [[186.8,187.8],[187.2,188.2],[164.3,164.9],[225.7,226.3]],\
+            #latras = [[1.5,2.5],[12.1,12.8],[1.3,1.9],[10.2,10.8]],\
+            ascale=0.5):
+    
+    pixel_theta, pixel_phi = hp.pix2ang(nside, np.arange(12*nside**2), lonlat=True)
+    maskpt = 1.
+    
+    for lonra, latra in zip(lonras,latras):
+        maskpt *= create_square_mask(nside,lonra,latra,pixel_theta,pixel_phi)
+    if ascale!= 0.:
+        maskpt = curvedsky.utils.apodize(nside,maskpt,ascale)
+
+    return maskpt
+
+
+def ivars_normalize(ivars):
+    n1, n2, n3 = np.shape(ivars[:,:,:,0,0])
+    nivars = 0.*ivars
+    for i in range(n1):
+        for j in range(n2):
+            for k in range(n3):
+                nivars[i,j,k,:,:] = ivars[i,j,k,:,:]/np.max(ivars[i,j,k,:,:])
+    return nivars
+
+
 def alm2aps_null(qid,overwrite=False,verbose=True,mtype=['T'],ep=1e-30,**kwargs):
 
     pid = qid.replace('_d0','_0')

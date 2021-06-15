@@ -27,20 +27,14 @@ kwargs_cinv = {\
 kwargs_cmb = {\
     'snmin': 0, \
     'snmax': 100, \
-    'fltr': 'cinv' \
+    'fltr': 'cinv', \
+    'ptsr': 'base', \
 }
 
-kwargs_qrec = {\
-    'n0max':50, \
-    'mfmax':100, \
-    'rlmin':500, \
-    'qlist':['TT']
-}
-
-
-wqid = 'boss_alldn'
+wqid = 'boss_s15n'
 qids = local.get_subqids(wqid)
 
 # cinv
 wiener_cinv_core(qids,wqid,kwargs_ov=kwargs_ov,kwargs_cmb=kwargs_cmb,kwargs_cinv=kwargs_cinv)
+interface(['aps'],[wqid],kwargs_ov=kwargs_ov,kwargs=kwargs_cmb)
 
